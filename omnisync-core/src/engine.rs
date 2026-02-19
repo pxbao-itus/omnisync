@@ -49,8 +49,6 @@ impl SyncEngine {
 
         // 3. Start the event loop
         loop {
-            // We lock the watcher briefly to check for events
-            // In a real app we might want a separate channel or async-friendly watcher stream
             let event = {
                 let watcher_guard = self.watcher.lock().await;
                 watcher_guard.try_recv()
@@ -59,14 +57,55 @@ impl SyncEngine {
             if let Some(event_result) = event {
                 match event_result {
                     Ok(event) => {
-                        println!("Detected change: {:?}", event);
-                        // TODO: Queue this event for the TransferManager
+                        use notify::EventKind;
+                        let should_upload = matches!(
+                            event.kind,
+                            EventKind::Create(_) | EventKind::Modify(_)
+                        );
+
+                        if should_upload {
+                            for changed_path in &event.paths {
+                                println!("Detected change: {:?}", changed_path);
+
+                                // Find the matching sync pair for this path
+                                let pairs = self.get_sync_pairs().await.unwrap_or_default();
+                                for pair in &pairs {
+                                    if changed_path.starts_with(&pair.local_path) {
+                                        // Build the remote path: replace local prefix with remote prefix
+                                        let rel = changed_path
+                                            .strip_prefix(&pair.local_path)
+                                            .unwrap_or(changed_path);
+                                        let remote_path = format!(
+                                            "{}/{}",
+                                            pair.remote_path.trim_end_matches('/'),
+                                            rel.display()
+                                        );
+
+                                        // Trigger upload on all providers matching this pair
+                                        for provider in &self.providers {
+                                            if provider.id() == pair.provider_id {
+                                                if let Err(e) = provider
+                                                    .upload_file(changed_path, &remote_path)
+                                                    .await
+                                                {
+                                                    eprintln!("Upload error: {:?}", e);
+                                                } else {
+                                                    println!(
+                                                        "Uploaded {:?} -> {}",
+                                                        changed_path, remote_path
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     Err(e) => eprintln!("Watch error: {:?}", e),
                 }
             }
-            
-            // Sleep to prevent busy loop (this is a naive implementation for now)
+
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }

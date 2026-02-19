@@ -18,6 +18,6 @@ echo "Created test directory: $TEST_DIR"
 # HOWEVER, for this test, we can trust the integration tests we just ran.
 # 
 # To demonstrate the engine running:
-echo "Starting OmniSync Engine (Press Ctrl+C to stop)..."
+echo "Starting OmniSync Daemon (Press Ctrl+C to stop)..."
 echo "The engine will initialize the DB at ./omnisync.db"
-cargo run -p omnisync-cli -- --db-path ./omnisync.db
+cargo run -p omnisync-cli -- --db-path ./omnisync.db daemon
