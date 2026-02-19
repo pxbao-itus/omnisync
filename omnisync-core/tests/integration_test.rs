@@ -19,7 +19,14 @@ async fn test_engine_initialization() {
     // Initialize the engine
     let engine = SyncEngine::new(pool);
     
-    // Just verify we can create it and it doesn't crash immediately
-    // In a real scenario, we would mock providers and test sync logic
-    assert!(engine.start().await.is_ok());
+    // Run start in a background task with a timeout to verify it starts and runs
+    // Since start() loops indefinitely, a timeout expiration is actually a success (it didn't crash)
+    let result = tokio::time::timeout(Duration::from_millis(500), engine.start()).await;
+    
+    // Check that it didn't return an error (it should have timed out)
+    if let Ok(config_res) = result {
+         assert!(config_res.is_ok(), "Engine returned error: {:?}", config_res.err());
+    } else {
+        // Timeout is good, it means it's running
+    }
 }
