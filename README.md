@@ -63,46 +63,35 @@ cargo tauri dev
 The project is structured as a Cargo Workspace with a shared library (`omnisync-core`) and two consumers (`omnisync-cli` and `omnisync-gui`).
 
 ```mermaid
-flowchart TD
+graph TD
     subgraph Clients
-        CLI["omnisync-cli\n(Command Line Interface)"]
-        GUI["omnisync-gui\n(Tauri GUI Application)"]
+        CLI[omnisync-cli]
+        GUI[omnisync-gui]
     end
 
-    subgraph Library ["Library (omnisync-core)"]
-        Core["omnisync-core\n(Shared Logic)"]
-        
-        subgraph Internal ["Internal Modules"]
-            Engine["SyncEngineStruct\n(Orchestration)"]
-            ProviderTrait["CloudProvider Trait\n(Abstraction)"]
-            DB[("SQLite Database\nvia SQLx")]
-        end
+    subgraph "omnisync-core"
+        Core[Shared Logic]
+        Engine[SyncEngine]
+        Provider[CloudProvider Trait]
+        DB[(SQLite DB)]
     end
 
-    subgraph External ["External Services"]
-        Cloud["Cloud Storage\n(Google Drive, OneDrive, etc.)"]
-        FS["Local File System"]
+    subgraph "External"
+        Cloud[Cloud Storage]
+        FS[Local Filesystem]
     end
 
-    CLI -->|Imports & Runs| Core
-    GUI -->|Imports & Runs| Core
+    CLI --> Core
+    GUI --> Core
 
-    Core -->|Contains| Engine
-    Core -->|Defines| ProviderTrait
+    Core --> Engine
+    Core --> Provider
     
-    Engine -->|Persists State| DB
-    Engine -->|Watches| FS
-    Engine -->|Syncs with| ProviderTrait
+    Engine --> DB
+    Engine --> FS
+    Engine --> Provider
     
-    ProviderTrait -.->|Implemented For| Cloud
-    
-    classDef rust fill:#dea,stroke:#333,stroke-width:2px;
-    classDef db fill:#bfb,stroke:#333,stroke-width:2px;
-    classDef ext fill:#ddd,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5;
-    
-    class CLI,GUI,Core,Engine,ProviderTrait rust;
-    class DB db;
-    class Cloud,FS ext;
+    Provider -.-> Cloud
 ```
 
 ## Sync Flow & Mechanisms
