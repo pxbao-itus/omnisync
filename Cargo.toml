@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "omnisync-core",
+    "omnisync-cli",
+    "omnisync-gui/src-tauri",
+]
+resolver = "2"
