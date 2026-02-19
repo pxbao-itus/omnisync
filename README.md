@@ -63,29 +63,27 @@ cargo tauri dev
 The project is structured as a Cargo Workspace with a shared library (`omnisync-core`) and two consumers (`omnisync-cli` and `omnisync-gui`).
 
 ```mermaid
-graph TD
-    %% Nodes
-    subgraph "Clients"
-        CLI[omnisync-cli<br/>(Command Line Interface)]
-        GUI[omnisync-gui<br/>(Tauri GUI Application)]
+flowchart TD
+    subgraph Clients
+        CLI["omnisync-cli\n(Command Line Interface)"]
+        GUI["omnisync-gui\n(Tauri GUI Application)"]
     end
 
-    subgraph "Library (omnisync-core)"
-        Core[omnisync-core<br/>(Shared Logic)]
+    subgraph Library ["Library (omnisync-core)"]
+        Core["omnisync-core\n(Shared Logic)"]
         
-        subgraph "Internal Modules"
-            Engine[SyncEngineStruct<br/>(Orchestration)]
-            ProviderTrait[CloudProvider Trait<br/>(Abstraction)]
-            DB[(SQLite Database<br/>via SQLx)]
+        subgraph Internal ["Internal Modules"]
+            Engine["SyncEngineStruct\n(Orchestration)"]
+            ProviderTrait["CloudProvider Trait\n(Abstraction)"]
+            DB[("SQLite Database\nvia SQLx")]
         end
     end
 
-    subgraph "External Services"
-        Cloud[Cloud Storage<br/>(Google Drive, OneDrive, etc.)]
-        FS[Local File System]
+    subgraph External ["External Services"]
+        Cloud["Cloud Storage\n(Google Drive, OneDrive, etc.)"]
+        FS["Local File System"]
     end
 
-    %% Relationships
     CLI -->|Imports & Runs| Core
     GUI -->|Imports & Runs| Core
 
@@ -98,7 +96,6 @@ graph TD
     
     ProviderTrait -.->|Implemented For| Cloud
     
-    %% Styling
     classDef rust fill:#dea,stroke:#333,stroke-width:2px;
     classDef db fill:#bfb,stroke:#333,stroke-width:2px;
     classDef ext fill:#ddd,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5;
