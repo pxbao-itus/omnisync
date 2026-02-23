@@ -11,6 +11,13 @@ let syncPairs = [];
 let activeFilter = 'all';
 let currentProvider = 'gdrive';
 let isConnected = false;
+let currentPair = null;
+
+const mainContent = document.getElementById('main-content');
+const detailView = document.getElementById('detail-view');
+const fileListBody = document.getElementById('file-list-body');
+const btnBack = document.getElementById('btn-back');
+const btnAddFile = document.getElementById('btn-add-file');
 
 // ---- Listen for Sync Status ----
 listen('sync-status', (event) => {
@@ -112,7 +119,7 @@ function renderCard(pair) {
     const localBasename = pair.local_path.split('/').filter(Boolean).pop() || pair.local_path;
 
     return `
-        <div class="folder-card" data-id="${pair.id}">
+        <div class="folder-card" data-id="${pair.id}" onclick="openFolderDetail(${pair.id})">
             <div class="folder-icon ${pair.provider_id}">
                 ${providerIcon(pair.provider_id)}
             </div>
@@ -136,7 +143,7 @@ function renderCard(pair) {
                 <span class="status-dot"></span>
                 ${statusLabel}
             </div>
-            <button class="btn-remove" onclick="removePair(${pair.id})" title="Remove">
+            <button class="btn-remove" onclick="event.stopPropagation(); removePair(${pair.id})" title="Remove">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                     <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
@@ -351,6 +358,116 @@ document.querySelectorAll('.nav-item').forEach(item => {
         render();
     });
 });
+
+// ---- Detail View Logic ----
+async function openFolderDetail(id) {
+    const pair = syncPairs.find(p => p.id === id);
+    if (!pair) return;
+
+    currentPair = pair;
+    document.getElementById('detail-folder-name').textContent = pair.local_path.split('/').pop() || pair.local_path;
+    document.getElementById('detail-folder-path').textContent = pair.local_path;
+
+    mainContent.style.display = 'none';
+    detailView.style.display = 'block';
+
+    loadFileTable();
+}
+window.openFolderDetail = openFolderDetail;
+
+async function loadFileTable() {
+    if (!currentPair) return;
+
+    try {
+        const files = await invoke('list_local_files', { path: currentPair.local_path });
+
+        // Sort: dirs first, then by name
+        files.sort((a, b) => {
+            if (a.is_dir !== b.is_dir) return b.is_dir ? 1 : -1;
+            return a.name.localeCompare(b.name);
+        });
+
+        fileListBody.innerHTML = files.map(file => renderFileRow(file)).join('');
+    } catch (err) {
+        showToast('Failed to list files: ' + err, 'error');
+    }
+}
+
+function renderFileRow(file) {
+    const sizeStr = file.is_dir ? '--' : formatBytes(file.size);
+    const dateStr = new Date(file.modified_at * 1000).toLocaleString();
+    const icon = file.is_dir
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+
+    return `
+        <tr>
+            <td>
+                <div class="file-name-cell">
+                    <span class="file-icon">${icon}</span>
+                    <span>${file.name}</span>
+                </div>
+            </td>
+            <td>${sizeStr}</td>
+            <td>${dateStr}</td>
+            <td>
+                <div class="file-actions">
+                    <button class="btn-file-action delete" onclick="deleteFile('${file.path.replace(/\\/g, '/')}')" title="Delete">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    </button>
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
+async function deleteFile(path) {
+    if (!confirm('Are you sure you want to delete this file? This will also remove it from the cloud.')) return;
+
+    try {
+        await invoke('delete_local_file', { path });
+        showToast('File deleted');
+        loadFileTable();
+    } catch (err) {
+        showToast('Failed to delete file: ' + err, 'error');
+    }
+}
+window.deleteFile = deleteFile;
+
+btnBack.addEventListener('click', () => {
+    mainContent.style.display = 'block';
+    detailView.style.display = 'none';
+    currentPair = null;
+    loadPairs(); // Refresh list
+});
+
+btnAddFile.addEventListener('click', async () => {
+    if (!currentPair) return;
+
+    try {
+        const selected = await open({ multiple: false });
+        if (selected) {
+            showToast('Adding file...');
+            const filename = selected.split(/[\\/]/).pop();
+            const dest = `${currentPair.local_path}/${filename}`;
+
+            await invoke('copy_file', { src: selected, dest });
+            showToast('File added successfully');
+            loadFileTable();
+        }
+    } catch (err) {
+        showToast('Failed to add file: ' + err, 'error');
+    }
+});
+
+function formatBytes(bytes, decimals = 2) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
 
 // ---- Toast ----
 function showToast(message, type = 'success') {

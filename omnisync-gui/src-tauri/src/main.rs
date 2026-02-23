@@ -12,6 +12,52 @@ struct AppState {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct LocalFileMetadata {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: u64,
+    modified_at: u64,
+}
+
+#[tauri::command]
+async fn list_local_files(path: String) -> Result<Vec<LocalFileMetadata>, String> {
+    let mut files = Vec::new();
+    let mut entries = tokio::fs::read_dir(&path).await.map_err(|e| e.to_string())?;
+
+    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+        let meta = entry.metadata().await.map_err(|e| e.to_string())?;
+        files.push(LocalFileMetadata {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: entry.path().to_string_lossy().to_string(),
+            is_dir: meta.is_dir(),
+            size: meta.len(),
+            modified_at: meta.modified().map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()).unwrap_or(0),
+        });
+    }
+
+    Ok(files)
+}
+
+#[tauri::command]
+async fn delete_local_file(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.exists() {
+        if p.is_dir() {
+            tokio::fs::remove_dir_all(p).await.map_err(|e| e.to_string())?;
+        } else {
+            tokio::fs::remove_file(p).await.map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn copy_file(src: String, dest: String) -> Result<(), String> {
+    tokio::fs::copy(src, dest).await.map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct SyncPairResponse {
     id: i64,
     local_path: String,
@@ -214,7 +260,10 @@ fn main() {
             list_remote_folders,
             get_auth_status,
             start_oauth,
-            disconnect_provider
+            disconnect_provider,
+            list_local_files,
+            delete_local_file,
+            copy_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -100,7 +100,7 @@
             </header>
 
             <!-- Folder List -->
-            <div class="content">
+            <div class="content" id="main-content">
                 <div class="folder-list" id="folder-list">
                     <!-- Dynamic content rendered by JS -->
                 </div>
@@ -117,6 +117,47 @@
                     </div>
                     <h2 class="empty-title">No folders synced yet</h2>
                     <p class="empty-desc">Click "Add Folder" to start syncing a directory with your cloud provider.</p>
+                </div>
+            </div>
+
+            <!-- Detail View -->
+            <div class="content" id="detail-view" style="display: none;">
+                <div class="view-header">
+                    <button class="btn-back" id="btn-back">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="19" y1="12" x2="5" y2="12" />
+                            <polyline points="12 19 5 12 12 5" />
+                        </svg>
+                        Back
+                    </button>
+                    <div class="header-info">
+                        <h2 id="detail-folder-name">Folder Name</h2>
+                        <p id="detail-folder-path">/path/to/folder</p>
+                    </div>
+                    <button class="btn-add-file" id="btn-add-file">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5">
+                            <line x1="12" y1="5" x2="12" y2="19" />
+                            <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                        Add File
+                    </button>
+                </div>
+                <div class="file-list-container">
+                    <table class="file-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th style="width: 100px;">Size</th>
+                                <th style="width: 150px;">Modified</th>
+                                <th style="width: 80px; text-align: center;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="file-list-body">
+                            <!-- Files rendered here -->
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </main>
