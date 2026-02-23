@@ -50,7 +50,8 @@ build-all: build-mac build-win build-linux
 
 # Setup Rust targets
 setup-targets:
-	rustup target add universal-apple-darwin
+	rustup target add aarch64-apple-darwin
+	rustup target add x86_64-apple-darwin
 	rustup target add x86_64-pc-windows-msvc
 	rustup target add x86_64-unknown-linux-gnu
 
