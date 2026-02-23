@@ -18,6 +18,31 @@ impl GoogleDriveProvider {
             access_token,
         }
     }
+
+    async fn find_file_id(&self, name: &str, parent_id: &str) -> CloudResult<Option<String>> {
+        let escaped_name = name.replace("'", "\\'");
+        let q = format!("name = '{}' and '{}' in parents and trashed = false", escaped_name, parent_id);
+        let response = self.client
+            .get("https://www.googleapis.com/drive/v3/files")
+            .query(&[("q", q.as_str()), ("fields", "files(id)")])
+            .bearer_auth(&self.access_token)
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(CloudError::Unauthenticated);
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(CloudError::ApiError(format!("Search failed: {}", error_text)));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        let files = body["files"].as_array().ok_or_else(|| CloudError::ApiError("Invalid search response".to_string()))?;
+        
+        Ok(files.first().and_then(|f| f["id"].as_str()).map(|s| s.to_string()))
+    }
 }
 
 #[async_trait]
@@ -36,32 +61,60 @@ impl CloudProvider for GoogleDriveProvider {
             .and_then(|n| n.to_str())
             .ok_or_else(|| CloudError::Other(anyhow!("Invalid filename")))?;
 
-        let metadata_part = serde_json::json!({
-            "name": filename,
-        })
-        .to_string();
+        // Check if file already exists
+        let existing_id = self.find_file_id(filename, _cloud_path).await?;
 
-        let form = reqwest::multipart::Form::new()
-            .part("metadata", reqwest::multipart::Part::text(metadata_part).mime_str("application/json")?)
-            .part("file", reqwest::multipart::Part::bytes(contents).mime_str("application/octet-stream")?);
+        if let Some(file_id) = existing_id {
+            // Update existing file: PATCH https://www.googleapis.com/upload/drive/v3/files/{fileId}?uploadType=media
+            let response = self.client
+                .patch(format!("https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media", file_id))
+                .bearer_auth(&self.access_token)
+                .body(contents)
+                .send()
+                .await?;
 
-        let response = self.client
-            .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
-            .bearer_auth(&self.access_token)
-            .multipart(form)
-            .send()
-            .await?;
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(CloudError::Unauthenticated);
+            }
 
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(CloudError::Unauthenticated);
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(CloudError::ApiError(format!("Update failed: {}", error_text)));
+            }
+            println!("Updated {} on Google Drive", filename);
+        } else {
+            // Create new file
+            let mut metadata: serde_json::Value = serde_json::json!({
+                "name": filename,
+            });
+
+            if _cloud_path != "root" && !_cloud_path.is_empty() {
+                metadata["parents"] = serde_json::json!([_cloud_path]);
+            }
+
+            let metadata_part = metadata.to_string();
+            let form = reqwest::multipart::Form::new()
+                .part("metadata", reqwest::multipart::Part::text(metadata_part).mime_str("application/json")?)
+                .part("file", reqwest::multipart::Part::bytes(contents).mime_str("application/octet-stream")?);
+
+            let response = self.client
+                .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
+                .bearer_auth(&self.access_token)
+                .multipart(form)
+                .send()
+                .await?;
+
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(CloudError::Unauthenticated);
+            }
+
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(CloudError::ApiError(format!("Upload failed: {}", error_text)));
+            }
+            println!("Created {} on Google Drive", filename);
         }
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(CloudError::ApiError(error_text));
-        }
-
-        println!("Uploaded {} to Google Drive", filename);
         Ok(())
     }
 
@@ -69,7 +122,28 @@ impl CloudProvider for GoogleDriveProvider {
         Ok(())
     }
 
-    async fn delete_file(&self, _cloud_path: &str) -> CloudResult<()> {
+    async fn delete_file(&self, filename: &str, cloud_parent: &str) -> CloudResult<()> {
+        let existing_id = self.find_file_id(filename, cloud_parent).await?;
+
+        if let Some(file_id) = existing_id {
+            // DELETE https://www.googleapis.com/drive/v3/files/{fileId}
+            let response = self.client
+                .delete(format!("https://www.googleapis.com/drive/v3/files/{}", file_id))
+                .bearer_auth(&self.access_token)
+                .send()
+                .await?;
+
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(CloudError::Unauthenticated);
+            }
+
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(CloudError::ApiError(format!("Delete failed: {}", error_text)));
+            }
+            println!("Deleted {} from Google Drive", filename);
+        }
+
         Ok(())
     }
 

@@ -29,7 +29,7 @@ pub trait CloudProvider: Send + Sync {
     async fn download_file(&self, cloud_path: &str, local_path: &Path) -> CloudResult<()>;
     
     /// Delete a file on the cloud
-    async fn delete_file(&self, cloud_path: &str) -> CloudResult<()>;
+    async fn delete_file(&self, filename: &str, cloud_parent: &str) -> CloudResult<()>;
     
     /// Get metadata for a file (hash, size, modified_at)
     async fn get_metadata(&self, cloud_path: &str) -> CloudResult<FileMetadata>;
