@@ -64,6 +64,46 @@ const btnOauth = document.getElementById('btn-oauth');
 const btnDisconnect = document.getElementById('btn-disconnect');
 const btnAddSubmit = document.getElementById('btn-add-submit');
 
+// ---- Theme Management ----
+function setupTheme() {
+    const themeBtns = document.querySelectorAll('.theme-btn');
+    const savedTheme = localStorage.getItem('omnisync-theme') || 'system';
+
+    const applyTheme = (mode) => {
+        let themeToApply = mode;
+        if (mode === 'system') {
+            themeToApply = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+
+        document.documentElement.setAttribute('data-theme', themeToApply);
+
+        // Update UI
+        themeBtns.forEach(btn => {
+            if (btn.dataset.themeMode === mode) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+
+        localStorage.setItem('omnisync-theme', mode);
+    };
+
+    themeBtns.forEach(btn => {
+        btn.addEventListener('click', () => applyTheme(btn.dataset.themeMode));
+    });
+
+    // Listen for system theme changes
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+        if (localStorage.getItem('omnisync-theme') === 'system') {
+            applyTheme('system');
+        }
+    });
+
+    // Initial apply
+    applyTheme(savedTheme);
+}
+
 // ---- Provider helpers ----
 const providerLabels = {
     gdrive: 'Google Drive',
@@ -525,6 +565,7 @@ function showToast(message, type = 'success') {
 
 // ---- Init ----
 document.addEventListener('DOMContentLoaded', async () => {
+    setupTheme();
     await loadPairs();
 
     // Check auth for whatever is selected by default
