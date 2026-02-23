@@ -1,66 +1,64 @@
-# OmniSync-Engine
+# OmniSync
 
-A high-performance, cross-platform file synchronization service built with Rust.
+<p align="center">
+  <img src="assets/hero-mockup.png" alt="OmniSync Hero" width="800">
+</p>
 
-## Components
+## Your Files, Everywhere, Instantly.
 
-- **omnisync-core**: The library containing the synchronization logic and database models.
-- **omnisync-cli**: A command-line interface for the engine.
-- **omnisync-gui**: A Tauri-based graphical user interface.
+OmniSync is a next-generation, high-performance file synchronization service that bridges the gap between your local devices and the cloud. Built with **Rust** for uncompromising speed and reliability, OmniSync offers a premium experience for managing your digital life.
 
-## Prerequisites
+---
 
+### ✨ Key Features
+
+- 🚀 **Lightning Fast Sync**: Leveraging Rust's performance to handle thousands of files with minimal overhead.
+- ☁️ **Multi-Cloud Integration**: Native support for Google Drive (with OneDrive and Dropbox coming soon).
+- 🛡️ **Privacy First**: Your sync state is stored locally in a secure SQLite database. We don't track your data.
+- 💻 **Cross-Platform**: Seamlessly works across macOS, Linux, and Windows.
+- 🔄 **Real-time Detection**: Instant file change detection using advanced filesystem watching technology.
+- 🎨 **Beautiful Interface**: A modern, glassmorphic GUI designed for clarity and ease of use.
+
+---
+
+### 🛠️ Components
+
+The OmniSync ecosystem consists of three main modules:
+
+1.  **OmniSync Core**: The powerhouse library containing all synchronization logic.
+2.  **OmniSync CLI**: For power users who prefer the speed of the command line.
+3.  **OmniSync Desktop**: A stunning Tauri-based graphical interface for everyone.
+
+---
+
+### 🚀 Getting Started
+
+#### Prerequisites
 - [Rust](https://www.rust-lang.org/tools/install) (latest stable)
-- System dependencies for Tauri (see [Tauri Setup Guide](https://tauri.app/v1/guides/getting-started/prerequisites))
+- System dependencies (refer to the [Tauri setup guide](https://tauri.app/v1/guides/getting-started/prerequisites))
 
-### Linux Dependencies
-```bash
-sudo apt-get update
-sudo apt-get install libwebkit2gtk-4.0-dev \
-    build-essential \
-    curl \
-    wget \
-    file \
-    libssl-dev \
-    libgtk-3-dev \
-    libayatana-appindicator3-dev \
-    librsvg2-dev
-```
+#### Quick Install (from source)
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/pxbao-itus/omnisync.git
+   cd omnisync
+   ```
 
-## Getting Started
+2. **Launch the Desktop App**
+   ```bash
+   cargo tauri dev
+   ```
 
-### 1. Build the Project
+3. **Or use the CLI**
+   ```bash
+   cargo run -p omnisync-cli -- --db-path ./omnisync.db
+   ```
 
-```bash
-cargo build
-```
+---
 
-### 2. Run Integration Tests
+### 🏗️ For Developers
 
-```bash
-cargo test -p omnisync-core
-```
-
-### 3. Run the CLI
-
-To start the sync engine (requires a path to a SQLite database file, which will be created if it doesn't exist):
-
-```bash
-cargo run -p omnisync-cli -- --db-path ./omnisync.db
-```
-
-### 4. Run the GUI
-
-```bash
-cargo tauri dev
-# OR if you want to run specifically the gui package context
-cd omnisync-gui
-cargo tauri dev
-```
-
-## Architecture
-
-The project is structured as a Cargo Workspace with a shared library (`omnisync-core`) and two consumers (`omnisync-cli` and `omnisync-gui`).
+OmniSync is built with a modular architecture in Mind.
 
 ```mermaid
 graph TD
@@ -83,43 +81,23 @@ graph TD
 
     CLI --> Core
     GUI --> Core
-
     Core --> Engine
     Core --> Provider
-    
     Engine --> DB
     Engine --> FS
     Engine --> Provider
-    
     Provider -.-> Cloud
 ```
 
-## Sync Flow & Mechanisms
+#### Running Tests
+```bash
+cargo test -p omnisync-core
+```
 
-### 1. Initialization
-- **Engine Startup**: The `SyncEngine` initializes the SQLite connection pool and runs pending migrations.
-- **Provider Registry**: Cloud providers (e.g., Google Drive, OneDrive) are registered implementing the `CloudProvider` trait.
-- **Watcher Setup**: The engine loads active `sync_pairs` from the database and registers their local paths with the `notify` watcher.
+---
 
-### 2. Change Detection (Local -> Cloud)
-1.  **Event Capture**: The `FilesystemWatcher` listens for OS-level file events (`Create`, `Modify`, `Remove`, `Rename`).
-2.  **Event Loop**: `SyncEngine` polls these events in a non-blocking loop.
-3.  **Processing** (Planned):
-    - **Debouncing**: Short-term events are aggregated to prevent rapid-fire uploads.
-    - **Filtering**: Files matching `.syncignore` patterns are discarded.
-    - **Hashing**: Calculating file hashes to detect content changes versus metadata-only changes.
-4.  **Transfer**: The valid event triggers a `CloudProvider::upload_file` call.
-5.  **State Update**: Upon success, the `files` table is updated with the new hash and timestamp.
+<p align="center">
+  Built with ❤️ by the OmniSync Team.
+</p>
 
-### 3. Change Detection (Cloud -> Local) (Planned)
-1.  **Polling/Webhook**: The engine periodically polls the cloud provider for a "changes" or "delta" token.
-2.  **Reconciliation**: Incoming changes are compared against the local database state.
-3.  **Conflict Resolution**:
-    - **Last Write Wins**: Default strategy based on timestamps.
-    - **Conflict Copy**: Renaming local files if a remote conflict occurs.
-
-## Data Models
-
-- **SyncPair**: Represents a mapping between a `local_path` and a `remote_path` for a specific `provider_id`.
-- **Files Table**: Tracks the state of every synced file (path, hash, size, modified_at) to enable differential sync.
 
