@@ -247,16 +247,17 @@ impl SyncEngine {
         Ok(())
     }
 
-    pub async fn add_sync_pair(&self, local: &str, remote: &str, provider: &str) -> Result<i64> {
+    pub async fn add_sync_pair(&self, local: &str, remote: &str, remote_name: &str, provider: &str) -> Result<i64> {
         let id: i64 = sqlx::query_scalar(
             r#"
-            INSERT INTO sync_pairs (local_path, remote_path, provider_id)
-            VALUES (?, ?, ?)
+            INSERT INTO sync_pairs (local_path, remote_path, remote_name, provider_id)
+            VALUES (?, ?, ?, ?)
             RETURNING id
             "#
         )
         .bind(local)
         .bind(remote)
+        .bind(remote_name)
         .bind(provider)
         .fetch_one(&self.pool)
         .await?;
@@ -269,7 +270,7 @@ impl SyncEngine {
 
     pub async fn remove_sync_pair(&self, id: i64) -> Result<()> {
         let pair: Option<SyncPair> = sqlx::query_as::<_, SyncPair>(
-            "SELECT id, local_path, remote_path, provider_id, status, created_at FROM sync_pairs WHERE id = ?"
+            "SELECT id, local_path, remote_path, remote_name, provider_id, status, created_at FROM sync_pairs WHERE id = ?"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -291,7 +292,7 @@ impl SyncEngine {
     pub async fn get_sync_pairs(&self) -> Result<Vec<SyncPair>> {
         let pairs = sqlx::query_as::<_, SyncPair>(
             r#"
-            SELECT id, local_path, remote_path, provider_id, status, created_at
+            SELECT id, local_path, remote_path, remote_name, provider_id, status, created_at
             FROM sync_pairs
             "#
         )

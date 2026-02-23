@@ -125,7 +125,7 @@ function renderCard(pair) {
                     </span>
                     <span class="meta-item">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><path d="M21 3l-7 7"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-                        ${pair.remote_path}
+                        ${pair.remote_name}
                     </span>
                     <span class="meta-item" style="color: var(--provider-${pair.provider_id}, var(--text-tertiary))">
                         ${providerLabel}
@@ -266,11 +266,12 @@ async function loadPairs() {
     }
 }
 
-async function addPair(local, remote, provider) {
+async function addPair(local, remote, remoteName, provider) {
     try {
         await invoke('add_sync_pair', {
             localPath: local,
             remotePath: remote,
+            remoteName: remoteName,
             providerId: provider,
         });
         showToast('Folder added to sync list', 'success');
@@ -334,10 +335,11 @@ addForm.addEventListener('submit', async e => {
 
     const local = inputLocal.value.trim();
     const remote = selectRemote.value;
+    const remoteName = selectRemote.options[selectRemote.selectedIndex].text;
     const provider = currentProvider;
 
     if (!local || !remote) return;
-    await addPair(local, remote, provider);
+    await addPair(local, remote, remoteName, provider);
 });
 
 // ---- Sidebar ----

@@ -16,6 +16,7 @@ struct SyncPairResponse {
     id: i64,
     local_path: String,
     remote_path: String,
+    remote_name: String,
     provider_id: String,
     status: String,
     created_at: i64,
@@ -34,6 +35,7 @@ async fn get_sync_pairs(state: State<'_, AppState>) -> Result<Vec<SyncPairRespon
             id: p.id,
             local_path: p.local_path,
             remote_path: p.remote_path,
+            remote_name: p.remote_name,
             provider_id: p.provider_id,
             status: p.status,
             created_at: p.created_at,
@@ -46,10 +48,11 @@ async fn add_sync_pair(
     state: State<'_, AppState>,
     local_path: String,
     remote_path: String,
+    remote_name: String,
     provider_id: String,
 ) -> Result<i64, String> {
     let id = state.engine
-        .add_sync_pair(&local_path, &remote_path, &provider_id)
+        .add_sync_pair(&local_path, &remote_path, &remote_name, &provider_id)
         .await
         .map_err(|e| format!("Failed to add sync pair: {}", e))?;
     Ok(id)
