@@ -156,7 +156,7 @@ function renderCard(pair) {
     const statusClass = pair.status || 'active';
     const statusLabel = window.t(statusClass);
     const providerLabel = providerLabels[pair.provider_id] || pair.provider_id;
-    const localBasename = pair.local_path.split('/').filter(Boolean).pop() || pair.local_path;
+    const localBasename = pair.local_path.split(/[\\/]/).filter(Boolean).pop() || pair.local_path;
 
     return `
         <div class="folder-card" data-id="${pair.id}" onclick="openFolderDetail(${pair.id})">
@@ -456,7 +456,7 @@ async function openFolderDetail(id) {
     if (!pair) return;
 
     currentPair = pair;
-    document.getElementById('detail-folder-name').textContent = pair.local_path.split('/').pop() || pair.local_path;
+    document.getElementById('detail-folder-name').textContent = pair.local_path.split(/[\\/]/).pop() || pair.local_path;
     document.getElementById('detail-folder-path').textContent = pair.local_path;
 
     mainContent.style.display = 'none';

@@ -33,11 +33,16 @@ The OmniSync ecosystem consists of three main modules:
 
 ### 🚀 Getting Started
 
+OmniSync is fully cross-platform. You can build it locally for your current OS or use our automated CI/CD for distribution.
+
 #### Prerequisites
 - [Rust](https://www.rust-lang.org/tools/install) (latest stable)
-- System dependencies (refer to the [Tauri setup guide](https://tauri.app/v1/guides/getting-started/prerequisites))
+- System dependencies:
+  - **macOS**: None (standard Xcode tools recommended)
+  - **Linux**: See the [Tauri Linux guide](https://tauri.app/v1/guides/getting-started/prerequisites#linux) for required packages (GTK, WebKit2Gtk, etc.)
+  - **Windows**: [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually pre-installed)
 
-#### Quick Install (from source)
+#### Build Locally
 1. **Clone the repository**
    ```bash
    git clone https://github.com/pxbao-itus/omnisync.git
@@ -46,13 +51,21 @@ The OmniSync ecosystem consists of three main modules:
 
 2. **Launch the Desktop App**
    ```bash
-   cargo tauri dev
+   # Start in development mode
+   make dev
+   
+   # Or build a production installer for your current OS
+   make build
    ```
 
-3. **Or use the CLI**
-   ```bash
-   cargo run -p omnisync-cli -- --db-path ./omnisync.db
-   ```
+---
+
+### 📦 Automated Releases
+
+We use **GitHub Actions** to automatically build and package OmniSync for **Windows (.msi, .exe)**, **macOS (.dmg, .app)**, and **Linux (.AppImage, .deb)**.
+
+- **CI/CD**: Every tag push (e.g., `v0.1.0`) triggers a matrix build across all three major operating systems.
+- **Artifacts**: Download the ready-to-run binaries from the [GitHub Releases](https://github.com/pxbao-itus/omnisync/releases) page.
 
 ---
 
