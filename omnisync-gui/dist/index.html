@@ -18,7 +18,7 @@
         <aside class="sidebar">
             <div class="sidebar-brand">
                 <div class="brand-icon">
-                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
                         stroke-linecap="round" stroke-linejoin="round">
                         <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
                     </svg>
@@ -53,8 +53,8 @@
                 </button>
                 <button class="nav-item" data-provider="icloud">
                     <span class="nav-icon">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5AC8FA" stroke-width="2">
-                            <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                            <path d="M17.5 19c-3.6 0-6.5-2.9-6.5-6.5s2.9-6.5,6.5-6.5c0.3 0 0.7 0 1 0.1C17.7 3.6 15.1 2 12 2C7.6 2 4 5.6 4 10c0 4.4 3.6 8 8 8 1.9 0 3.7-0.7 5.1-1.8 0.1 0.6 0.3 1.1 0.6 1.6C16.8 18.8 15.2 19 17.5 19z" fill="#5AC8FA"/>
                         </svg>
                     </span>
                     <span class="nav-text">iCloud</span>
@@ -64,8 +64,8 @@
                 </button>
                 <button class="nav-item" data-provider="onedrive">
                     <span class="nav-icon">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0078D4" stroke-width="2">
-                            <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                            <path d="M22 6.5C22 4.01 19.99 2 17.5 2C16.14 2 14.93 2.6 14.11 3.55C13.4 3.2 12.6 3 11.75 3C9.4 3 7.5 4.9 7.5 7.25C7.5 7.42 7.51 7.58 7.53 7.74C5.55 8.1 4 9.8 4 11.9C4 14.2 5.8 16 8 16H18C20.2 16 22 14.2 22 11.9C22 10.95 21.68 10.08 21.14 9.38C21.68 8.58 22 7.58 22 6.5Z" fill="#0078D4"/>
                         </svg>
                     </span>
                     <span class="nav-text">OneDrive</span>
@@ -153,10 +153,10 @@
                 <div class="empty-state" id="empty-state" style="display: none;">
                     <div class="empty-icon">
                         <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                            stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                            <line x1="12" y1="11" x2="12" y2="17" />
-                            <line x1="9" y1="14" x2="15" y2="14" />
+                            <circle cx="12" cy="13" r="3" />
+                            <path d="M12 10v1M12 15v1M15 13h1M8 13h1" />
                         </svg>
                     </div>
                     <h2 class="empty-title" data-i18n="no_folders">No folders synced yet</h2>
@@ -239,9 +239,8 @@
                         <label class="provider-card" data-provider="icloud">
                             <input type="radio" name="provider" value="icloud" hidden />
                             <div class="provider-icon">
-                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#5AC8FA"
-                                    stroke-width="2">
-                                    <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                                    <path d="M17.5 19c-3.6 0-6.5-2.9-6.5-6.5s2.9-6.5,6.5-6.5c0.3 0 0.7 0 1 0.1C17.7 3.6 15.1 2 12 2C7.6 2 4 5.6 4 10c0 4.4 3.6 8 8 8 1.9 0 3.7-0.7 5.1-1.8 0.1 0.6 0.3 1.1 0.6 1.6C16.8 18.8 15.2 19 17.5 19z" fill="#5AC8FA"/>
                                 </svg>
                             </div>
                             <span class="provider-name">iCloud</span>
@@ -250,9 +249,8 @@
                         <label class="provider-card" data-provider="onedrive">
                             <input type="radio" name="provider" value="onedrive" hidden />
                             <div class="provider-icon">
-                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0078D4"
-                                    stroke-width="2">
-                                    <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                                    <path d="M22 6.5C22 4.01 19.99 2 17.5 2C16.14 2 14.93 2.6 14.11 3.55C13.4 3.2 12.6 3 11.75 3C9.4 3 7.5 4.9 7.5 7.25C7.5 7.42 7.51 7.58 7.53 7.74C5.55 8.1 4 9.8 4 11.9C4 14.2 5.8 16 8 16H18C20.2 16 22 14.2 22 11.9C22 10.95 21.68 10.08 21.14 9.38C21.68 8.58 22 7.58 22 6.5Z" fill="#0078D4"/>
                                 </svg>
                             </div>
                             <span class="provider-name">OneDrive</span>

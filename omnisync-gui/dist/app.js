@@ -116,11 +116,11 @@ function providerIcon(id) {
         case 'gdrive':
             return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2L2 19.5h7.5L12 14l2.5 5.5H22L12 2z" fill="#4285F4"/><path d="M2 19.5l3.5-6L12 14l-2.5 5.5H2z" fill="#FBBC04"/><path d="M9.5 19.5H22l-3.5-6H5.5l3.5 6h.5z" fill="#34A853"/></svg>`;
         case 'icloud':
-            return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5AC8FA" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>`;
+            return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M17.5 19c-3.6 0-6.5-2.9-6.5-6.5s2.9-6.5,6.5-6.5c0.3 0 0.7 0 1 0.1C17.7 3.6 15.1 2 12 2C7.6 2 4 5.6 4 10c0 4.4 3.6 8 8 8 1.9 0 3.7-0.7 5.1-1.8 0.1 0.6 0.3 1.1 0.6 1.6C16.8 18.8 15.2 19 17.5 19z" fill="#5AC8FA"/></svg>`;
         case 'onedrive':
-            return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0078D4" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>`;
+            return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M22 6.5C22 4.01 19.99 2 17.5 2C16.14 2 14.93 2.6 14.11 3.55C13.4 3.2 12.6 3 11.75 3C9.4 3 7.5 4.9 7.5 7.25C7.5 7.42 7.51 7.58 7.53 7.74C5.55 8.1 4 9.8 4 11.9C4 14.2 5.8 16 8 16H18C20.2 16 22 14.2 22 11.9C22 10.95 21.68 10.08 21.14 9.38C21.68 8.58 22 7.58 22 6.5Z" fill="#0078D4"/></svg>`;
         default:
-            return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>`;
+            return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>`;
     }
 }
 
@@ -488,8 +488,8 @@ function renderFileRow(file) {
     const sizeStr = file.is_dir ? '--' : formatBytes(file.size);
     const dateStr = new Date(file.modified_at * 1000).toLocaleString();
     const icon = file.is_dir
-        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
-        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
 
     return `
         <tr>

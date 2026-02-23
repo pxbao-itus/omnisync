@@ -185,7 +185,12 @@ input {
     align-items: center;
     justify-content: center;
     color: #ffffff;
-    box-shadow: var(--shadow-glow);
+    box-shadow: 0 4px 12px var(--accent-glow);
+    transition: transform 0.3s ease;
+}
+
+.brand-icon:hover {
+    transform: rotate(15deg) scale(1.05);
 }
 
 .brand-name {
@@ -469,26 +474,34 @@ input {
 .folder-icon {
     width: 42px;
     height: 42px;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+    transition: all 0.2s ease;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+}
+
+.folder-card:hover .folder-icon {
+    transform: scale(1.05);
+    background: var(--bg-secondary);
 }
 
 .folder-icon.gdrive {
-    background: #4285f418;
-    color: #4285f4;
+    background: rgba(66, 133, 244, 0.08);
+    border-color: rgba(66, 133, 244, 0.2);
 }
 
 .folder-icon.icloud {
-    background: #5ac8fa18;
-    color: #5ac8fa;
+    background: rgba(90, 200, 250, 0.08);
+    border-color: rgba(90, 200, 250, 0.2);
 }
 
 .folder-icon.onedrive {
-    background: #0078d418;
-    color: #0078d4;
+    background: rgba(0, 120, 212, 0.08);
+    border-color: rgba(0, 120, 212, 0.2);
 }
 
 .folder-info {
@@ -804,11 +817,28 @@ select.form-input option {
 }
 
 .provider-icon {
-    width: 40px;
-    height: 40px;
+    width: 48px;
+    height: 48px;
+    background: var(--bg-tertiary);
+    border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
+    margin-bottom: 6px;
+    transition: all 0.3s ease;
+    border: 1px solid var(--border-subtle);
+}
+
+.provider-card:hover .provider-icon {
+    transform: translateY(-2px);
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+}
+
+.provider-card.selected .provider-icon {
+    background: var(--accent-subtle);
+    border-color: var(--accent);
+    box-shadow: 0 0 15px var(--accent-glow);
 }
 
 .provider-name {
