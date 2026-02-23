@@ -5,3 +5,5 @@
 db.sqlite
 .env
 *.db
+.vscode/
+test_gdrive_folder/

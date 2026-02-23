@@ -18,6 +18,15 @@ pub trait CloudProvider: Send + Sync {
     
     /// Get metadata for a file (hash, size, modified_at)
     async fn get_metadata(&self, cloud_path: &str) -> Result<FileMetadata>;
+
+    /// List folders in the cloud
+    async fn list_folders(&self) -> Result<Vec<RemoteFolder>>;
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RemoteFolder {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]

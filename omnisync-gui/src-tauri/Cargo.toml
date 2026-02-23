@@ -1,7 +1,7 @@
 [package]
 name = "omnisync-gui"
 version = "0.1.0"
-description = "A Tauri App"
+description = "OmniSync Desktop App"
 authors = ["you"]
 edition = "2021"
 
@@ -11,6 +11,10 @@ tauri-build = { version = "2.0.0-rc", features = [] }
 [dependencies]
 tauri = { version = "2.0.0-rc", features = [] }
 tauri-plugin-shell = "2.0.0-rc"
+tauri-plugin-dialog = "2.0.0-rc"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 omnisync-core = { path = "../../omnisync-core" }
+tokio = { version = "1.36", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
+anyhow = "1.0"

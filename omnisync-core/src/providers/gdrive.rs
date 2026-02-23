@@ -88,4 +88,32 @@ impl CloudProvider for GoogleDriveProvider {
             modified_at: 0,
         })
     }
+
+    async fn list_folders(&self) -> Result<Vec<crate::provider::RemoteFolder>> {
+        let response = self.client
+            .get("https://www.googleapis.com/drive/v3/files")
+            .query(&[
+                ("q", "mimeType='application/vnd.google-apps.folder' and trashed=false"),
+                ("fields", "files(id, name)"),
+            ])
+            .bearer_auth(&self.access_token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow!("Failed to list folders: {}", error_text));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        let files = body["files"].as_array().ok_or_else(|| anyhow!("Invalid response body"))?;
+
+        let folders = files.iter().filter_map(|f| {
+            let id = f["id"].as_str()?.to_string();
+            let name = f["name"].as_str()?.to_string();
+            Some(crate::provider::RemoteFolder { id, name })
+        }).collect();
+
+        Ok(folders)
+    }
 }
