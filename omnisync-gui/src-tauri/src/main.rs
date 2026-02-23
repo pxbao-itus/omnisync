@@ -58,6 +58,13 @@ async fn copy_file(src: String, dest: String) -> Result<(), String> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct UserInfo {
+    name: Option<String>,
+    email: Option<String>,
+    avatar: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct SyncPairResponse {
     id: i64,
     local_path: String,
@@ -116,7 +123,7 @@ async fn remove_sync_pair(state: State<'_, AppState>, id: i64) -> Result<(), Str
 #[tauri::command]
 async fn connect_provider(state: State<'_, AppState>, provider_id: String, token: String) -> Result<(), String> {
     state.engine
-        .set_credentials(&provider_id, &token)
+        .set_credentials(&provider_id, &token, None, None, None, None, None)
         .await
         .map_err(|e| format!("Failed to connect provider: {}", e))?;
     Ok(())
@@ -132,12 +139,17 @@ async fn list_remote_folders(state: State<'_, AppState>, provider_id: String) ->
 }
 
 #[tauri::command]
-async fn get_auth_status(state: State<'_, AppState>, provider_id: String) -> Result<bool, String> {
-    let token = state.engine
+async fn get_auth_status(state: State<'_, AppState>, provider_id: String) -> Result<Option<UserInfo>, String> {
+    let creds = state.engine
         .get_credentials(&provider_id)
         .await
         .map_err(|e| format!("Failed to get auth status: {}", e))?;
-    Ok(token.is_some())
+    
+    Ok(creds.map(|c| UserInfo {
+        name: c.user_name,
+        email: c.user_email,
+        avatar: c.user_avatar,
+    }))
 }
 
 #[tauri::command]

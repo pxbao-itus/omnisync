@@ -131,10 +131,10 @@ impl SyncEngine {
             cache.insert(path.to_path_buf(), Instant::now());
         }
 
-        let token = self.get_credentials(&pair.provider_id).await.unwrap_or(None);
-        if let Some(token) = token {
+        let creds = self.get_valid_credentials(&pair.provider_id).await.unwrap_or(None);
+        if let Some(creds) = creds {
             let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-                Box::new(crate::providers::gdrive::GoogleDriveProvider::new(token))
+                Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
             } else {
                 return Ok(());
             };
@@ -183,9 +183,9 @@ impl SyncEngine {
         }
 
         // 2. Get remote files
-        let token = self.get_credentials(&pair.provider_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+        let creds = self.get_valid_credentials(&pair.provider_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
         let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-            Box::new(crate::providers::gdrive::GoogleDriveProvider::new(token))
+            Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
         } else {
             return Ok(());
         };
@@ -214,9 +214,9 @@ impl SyncEngine {
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
-        let token = self.get_credentials(&pair.provider_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+        let creds = self.get_valid_credentials(&pair.provider_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
         let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-            Box::new(crate::providers::gdrive::GoogleDriveProvider::new(token))
+            Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
         } else {
             return Ok(());
         };
@@ -302,25 +302,140 @@ impl SyncEngine {
         Ok(pairs)
     }
 
-    pub async fn set_credentials(&self, provider_id: &str, access_token: &str) -> Result<()> {
+    pub async fn set_credentials(
+        &self, 
+        provider_id: &str, 
+        access_token: &str, 
+        refresh_token: Option<&str>, 
+        expires_in: Option<i64>,
+        user_name: Option<String>,
+        user_email: Option<String>,
+        user_avatar: Option<String>,
+    ) -> Result<()> {
+        let expires_at = expires_in.map(|secs| (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64) + secs);
+        
         sqlx::query(
-            "INSERT OR REPLACE INTO credentials (provider_id, access_token) VALUES (?, ?)"
+            "INSERT OR REPLACE INTO credentials (provider_id, access_token, refresh_token, expires_at, user_name, user_email, user_avatar) VALUES (?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(provider_id)
         .bind(access_token)
+        .bind(refresh_token)
+        .bind(expires_at)
+        .bind(user_name)
+        .bind(user_email)
+        .bind(user_avatar)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    pub async fn get_credentials(&self, provider_id: &str) -> Result<Option<String>> {
-        let token: Option<String> = sqlx::query_scalar(
-            "SELECT access_token FROM credentials WHERE provider_id = ?"
+    pub async fn get_credentials(&self, provider_id: &str) -> Result<Option<crate::models::Credentials>> {
+        let creds: Option<crate::models::Credentials> = sqlx::query_as(
+            "SELECT provider_id, access_token, refresh_token, expires_at, user_name, user_email, user_avatar FROM credentials WHERE provider_id = ?"
         )
         .bind(provider_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(token)
+        Ok(creds)
+    }
+
+    pub async fn get_valid_credentials(&self, provider_id: &str) -> Result<Option<crate::models::Credentials>> {
+        let creds = self.get_credentials(provider_id).await?;
+        if let Some(mut creds) = creds {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            
+            // If expires within 5 minutes, refresh
+            if let Some(expires_at) = creds.expires_at {
+                if expires_at - now < 300 {
+                    if provider_id == "gdrive" {
+                        if let Some(refresh_token) = &creds.refresh_token {
+                            println!("Refreshing Google token...");
+                            match self.refresh_google_token(refresh_token).await {
+                                Ok((new_access, new_expires)) => {
+                                    // Optionally re-fetch user info if missing
+                                    let mut user_name = creds.user_name.clone();
+                                    let mut user_email = creds.user_email.clone();
+                                    let mut user_avatar = creds.user_avatar.clone();
+                                    
+                                    if user_name.is_none() {
+                                        if let Ok((n, e, a)) = self.fetch_google_user_info(&new_access).await {
+                                            user_name = n;
+                                            user_email = e;
+                                            user_avatar = a;
+                                        }
+                                    }
+
+                                    self.set_credentials("gdrive", &new_access, Some(refresh_token), new_expires, user_name.clone(), user_email.clone(), user_avatar.clone()).await?;
+                                    creds.access_token = new_access;
+                                    creds.expires_at = new_expires.map(|secs| now + secs);
+                                    creds.user_name = user_name;
+                                    creds.user_email = user_email;
+                                    creds.user_avatar = user_avatar;
+                                    return Ok(Some(creds));
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to refresh token: {}", e);
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(Some(creds));
+        }
+        Ok(None)
+    }
+
+    async fn refresh_google_token(&self, refresh_token: &str) -> Result<(String, Option<i64>)> {
+        let client_id = crate::config::get_google_client_id();
+        let client_secret = crate::config::get_google_client_secret();
+        
+        let client = reqwest::Client::new();
+        let params = [
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("refresh_token", refresh_token),
+            ("grant_type", "refresh_token"),
+        ];
+
+        let response = client.post("https://oauth2.googleapis.com/token")
+            .form(&params)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let err = response.text().await?;
+            return Err(anyhow::anyhow!("Token refresh failed: {}", err));
+        }
+
+        let tokens: serde_json::Value = response.json().await?;
+        let access_token = tokens["access_token"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("No access token returned"))?.to_string();
+        let expires_in = tokens["expires_in"].as_i64();
+        
+        Ok((access_token, expires_in))
+    }
+
+    async fn fetch_google_user_info(&self, access_token: &str) -> Result<(Option<String>, Option<String>, Option<String>)> {
+        let client = reqwest::Client::new();
+        let response = client.get("https://www.googleapis.com/drive/v3/about?fields=user")
+            .bearer_auth(access_token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Ok((None, None, None));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        let user = &body["user"];
+        
+        let name = user["displayName"].as_str().map(|s| s.to_string());
+        let email = user["emailAddress"].as_str().map(|s| s.to_string());
+        let avatar = user["photoLink"].as_str().map(|s| s.to_string());
+        
+        Ok((name, email, avatar))
     }
 
     pub async fn disconnect_provider(&self, provider_id: &str) -> Result<()> {
@@ -332,11 +447,11 @@ impl SyncEngine {
     }
 
     pub async fn get_remote_folders(&self, provider_id: &str) -> Result<Vec<crate::provider::RemoteFolder>> {
-        let token = self.get_credentials(provider_id).await?
+        let creds = self.get_valid_credentials(provider_id).await?
             .ok_or_else(|| anyhow::anyhow!("Provider not connected"))?;
 
         if provider_id == "gdrive" {
-            let provider = crate::providers::gdrive::GoogleDriveProvider::new(token);
+            let provider = crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token);
             match provider.list_folders().await {
                 Ok(folders) => Ok(folders),
                 Err(CloudError::Unauthenticated) => {
@@ -397,8 +512,13 @@ impl SyncEngine {
         let tokens: serde_json::Value = response.json().await?;
         let access_token = tokens["access_token"].as_str()
             .ok_or_else(|| anyhow::anyhow!("No access token returned"))?;
+        let refresh_token = tokens["refresh_token"].as_str();
+        let expires_in = tokens["expires_in"].as_i64();
         
-        self.set_credentials("gdrive", access_token).await?;
+        // Fetch user info
+        let (user_name, user_email, user_avatar) = self.fetch_google_user_info(access_token).await.unwrap_or((None, None, None));
+        
+        self.set_credentials("gdrive", access_token, refresh_token, expires_in, user_name, user_email, user_avatar).await?;
 
         let response_body = "<html><body style='font-family:sans-serif;text-align:center;padding-top:50px;'><h1>✅ Authentication Successful!</h1><p>OmniSync is now connected. You can close this window now.</p></body></html>";
         let response_http = format!(
@@ -416,10 +536,10 @@ impl SyncEngine {
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
-        let token = self.get_credentials(&pair.provider_id).await.unwrap_or(None);
-        if let Some(token) = token {
+        let creds = self.get_valid_credentials(&pair.provider_id).await.unwrap_or(None);
+        if let Some(creds) = creds {
             let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-                Box::new(crate::providers::gdrive::GoogleDriveProvider::new(token))
+                Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
             } else {
                 return Ok(());
             };

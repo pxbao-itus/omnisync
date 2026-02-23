@@ -155,17 +155,18 @@ function renderCard(pair) {
 // ---- Auth & Provider logic ----
 async function checkAuth(providerId) {
     try {
-        const connected = await invoke('get_auth_status', { providerId });
-        isConnected = connected;
-        updateUIForStatus(providerId, connected);
-        return connected;
+        const userInfo = await invoke('get_auth_status', { providerId });
+        isConnected = !!userInfo;
+        updateUIForStatus(providerId, userInfo);
+        return isConnected;
     } catch (err) {
         console.error('Failed to check auth:', err);
         return false;
     }
 }
 
-function updateUIForStatus(providerId, connected) {
+function updateUIForStatus(providerId, userInfo) {
+    const connected = !!userInfo;
     const statusEl = document.getElementById(`status-${providerId}`);
     const card = document.querySelector(`.provider-card[data-provider="${providerId}"]`);
 
@@ -178,6 +179,27 @@ function updateUIForStatus(providerId, connected) {
         }
     }
 
+    // Update sidebar profile if this is the active filter
+    const sidebarProfile = document.getElementById('user-profile');
+    if (activeFilter === providerId) {
+        if (connected) {
+            sidebarProfile.style.display = 'flex';
+            sidebarProfile.innerHTML = `
+                <div class="profile-avatar">
+                    ${userInfo.avatar ? `<img src="${userInfo.avatar}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`}
+                </div>
+                <div class="profile-info">
+                    <div class="profile-name">${userInfo.name || 'Connected'}</div>
+                    <div class="profile-email">${userInfo.email || providerLabels[providerId]}</div>
+                </div>
+            `;
+        } else {
+            sidebarProfile.style.display = 'none';
+        }
+    } else if (activeFilter === 'all') {
+        sidebarProfile.style.display = 'none';
+    }
+
     if (currentProvider === providerId) {
         authSection.style.display = 'block';
         if (connected) {
@@ -186,6 +208,22 @@ function updateUIForStatus(providerId, connected) {
             syncFields.style.opacity = '1';
             syncFields.style.pointerEvents = 'all';
             btnAddSubmit.disabled = false;
+
+            // Update user info display
+            const avatarEl = authConnected.querySelector('img') || authConnected.querySelector('svg');
+            const nameEl = document.getElementById('connected-account');
+
+            if (userInfo.avatar) {
+                authConnected.querySelector('div[style*="width: 40px"]').innerHTML = `<img src="${userInfo.avatar}" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;" />`;
+            } else {
+                authConnected.querySelector('div[style*="width: 40px"]').innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+            }
+
+            nameEl.innerHTML = `
+                <div style="font-weight: 600;">${userInfo.name || 'Connected'}</div>
+                <div style="font-size: 11px; opacity: 0.7;">${userInfo.email || providerLabels[providerId]}</div>
+            `;
+
             fetchFolders(providerId);
         } else {
             authDisconnected.style.display = 'block';
@@ -351,10 +389,17 @@ addForm.addEventListener('submit', async e => {
 
 // ---- Sidebar ----
 document.querySelectorAll('.nav-item').forEach(item => {
-    item.addEventListener('click', () => {
+    item.addEventListener('click', async () => {
         document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
         item.classList.add('active');
         activeFilter = item.dataset.provider;
+
+        if (activeFilter !== 'all') {
+            await checkAuth(activeFilter);
+        } else {
+            document.getElementById('user-profile').style.display = 'none';
+        }
+
         render();
     });
 });
@@ -479,6 +524,11 @@ function showToast(message, type = 'success') {
 }
 
 // ---- Init ----
-document.addEventListener('DOMContentLoaded', () => {
-    loadPairs();
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadPairs();
+
+    // Check auth for whatever is selected by default
+    if (activeFilter !== 'all') {
+        checkAuth(activeFilter);
+    }
 });
