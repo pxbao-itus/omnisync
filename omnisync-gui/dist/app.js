@@ -24,7 +24,8 @@ const btnAddFile = document.getElementById('btn-add-file');
 // ---- Listen for Sync Status ----
 listen('sync-status', (event) => {
     const status = event.payload;
-    const { pair_id, path, type, message } = status.data || {};
+    const type = status.type;
+    const { pair_id, path, message } = status.data || {};
 
     // Store status for specific pair
     if (pair_id) {
@@ -83,9 +84,23 @@ function updateCardStatus(pairId) {
     } else {
         statusEl.className = `folder-status ${statusObj.type.toLowerCase()}`;
         let label = statusObj.type;
-        if (statusObj.type === 'Syncing') label = 'Syncing...';
-        if (statusObj.type === 'Downloading') label = 'Downloading...';
-        statusEl.innerHTML = `<span class="status-dot"></span>${label}`;
+        let icon = '<span class="status-dot"></span>';
+
+        if (statusObj.type === 'Syncing') {
+            label = 'Syncing...';
+            icon = '<div class="sync-spinner-mini"></div>';
+        } else if (statusObj.type === 'Downloading') {
+            label = 'Downloading...';
+            icon = '<div class="sync-spinner-mini"></div>';
+        } else if (statusObj.type === 'Uploaded') {
+            label = 'Synced';
+            icon = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        } else if (statusObj.type === 'Error') {
+            label = 'Error';
+            icon = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
+        }
+
+        statusEl.innerHTML = `${icon}${label}`;
     }
 }
 
@@ -587,11 +602,37 @@ window.navigateToSubfolder = navigateToSubfolder;
 
 function renderFileStatus(type, message) {
     if (type === 'Idle') return `<span class="file-status-idle">-</span>`;
-    if (type === 'Syncing') return `<span class="file-status-syncing">Uploading...</span>`;
-    if (type === 'Downloading') return `<span class="file-status-syncing">Downloading...</span>`;
-    if (type === 'Uploaded') return `<span class="file-status-uploaded">Synced</span>`;
+
+    if (type === 'Syncing' || type === 'Downloading') {
+        const label = type === 'Syncing' ? 'Syncing...' : 'Downloading...';
+        return `
+            <div class="file-status-container syncing">
+                <div class="sync-spinner-mini"></div>
+                <span class="file-status-syncing">${label}</span>
+            </div>
+        `;
+    }
+
+    if (type === 'Uploaded') {
+        return `
+            <div class="file-status-container uploaded">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <span class="file-status-uploaded">Synced</span>
+            </div>
+        `;
+    }
+
     if (type === 'Deleted') return `<span class="file-status-deleted">Deleted</span>`;
-    if (type === 'Error') return `<span class="file-status-error" title="${message}">Error</span>`;
+
+    if (type === 'Error') {
+        return `
+            <div class="file-status-container error" title="${message}">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                <span class="file-status-error">Error</span>
+            </div>
+        `;
+    }
+
     return type;
 }
 

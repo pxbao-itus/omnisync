@@ -148,11 +148,9 @@ impl SyncEngine {
 
             // Periodic cloud poll (every 60s)
             if last_poll.elapsed() > Duration::from_secs(60) {
-                println!("Performing periodic cloud poll...");
                 let pairs = self.get_sync_pairs().await.unwrap_or_default();
                 for pair in &pairs {
                     if pair.status == "active" {
-                        println!("Syncing pair: {}", pair.local_path);
                         let _ = self.perform_initial_sync(pair, on_status.clone()).await;
                     }
                 }
@@ -186,6 +184,10 @@ impl SyncEngine {
                 return Ok(());
             };
 
+            let filename = path.file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
+
             // Resolve parent ID for subfolders
             let parent = path.parent().ok_or_else(|| anyhow::anyhow!("No parent"))?;
             let remote_parent_id = match self.ensure_remote_path_exists(provider.as_ref(), pair, parent).await {
@@ -195,6 +197,28 @@ impl SyncEngine {
                     return Err(e);
                 }
             };
+
+            // Pre-check: Does it actually need syncing?
+            // This prevents UI flicker when Google Drive skips the upload anyway
+            let local_meta = tokio::fs::metadata(path).await?;
+            let local_size = local_meta.len();
+            let local_hash = self.compute_local_hash(path).await?;
+            
+            let existing_info = provider.list_files(&remote_parent_id).await?;
+            if let Some(remote) = existing_info.iter().find(|r| r.name == filename) {
+                let matches = if let Some(r_hash) = &remote.hash {
+                    *r_hash == local_hash
+                } else if let Some(r_size) = remote.size {
+                    r_size == local_size
+                } else {
+                    false
+                };
+
+                if matches {
+                    // println!("Skip sync_file: {:?} matches cloud.", path);
+                    return Ok(());
+                }
+            }
 
             let path_str = path.to_string_lossy().to_string();
             let pair_id = pair.id;
@@ -219,7 +243,7 @@ impl SyncEngine {
 
                 let on_status_clone = on_status.clone();
                 tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     on_status_clone(SyncStatus::Idle { pair_id });
                 });
             }
@@ -266,7 +290,6 @@ impl SyncEngine {
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
-        println!("Recursive sync local:{:?} remote_id:{}", local_dir, remote_dir_id);
 
         // 1. Get local files & dirs
         let mut local_entries = HashMap::new();
@@ -299,25 +322,28 @@ impl SyncEngine {
                             (Some(_r_size), Some(r_mtime), Some(r_hash)) => {
                                 let local_hash = self.compute_local_hash(path).await?;
                                 if local_hash != *r_hash {
-                                    if local_mtime > r_mtime {
-                                        // Local is newer and content different - upload
+                                    // Use a 2-second margin for stable sync (avoids jitter)
+                                    if local_mtime > r_mtime + 2 {
+                                        println!("Sync: Local file {:?} is newer and content differs. Uploading.", path);
                                         let _ = self.sync_file(path, pair, on_status.clone()).await;
-                                    } else {
-                                        // Cloud is newer and content different - download
+                                    } else if r_mtime > local_mtime + 2 {
+                                        println!("Sync: Cloud file {:?} is newer and content differs. Downloading.", path);
                                         let _ = self.sync_remote_to_local(&remote.id, path, pair, on_status.clone()).await;
                                     }
                                 }
                             }
                             (Some(r_size), Some(r_mtime), None) => {
                                 // Fallback to mtime/size if hash missing
-                                if local_mtime > r_mtime {
+                                if local_mtime > r_mtime + 2 {
+                                    println!("Sync: Local file {:?} is newer (no cloud hash). Uploading.", path);
                                     let _ = self.sync_file(path, pair, on_status.clone()).await;
-                                } else if r_mtime > local_mtime || local_size != r_size {
+                                } else if r_mtime > local_mtime + 2 || local_size != r_size {
+                                    println!("Sync: Cloud file {:?} is newer or size differs (no cloud hash). Downloading.", path);
                                     let _ = self.sync_remote_to_local(&remote.id, path, pair, on_status.clone()).await;
                                 }
                             }
                             _ => {
-                                // Fallback to upload if metadata missing
+                                println!("Sync: Missing metadata for {:?}, checking via sync_file.", path);
                                 let _ = self.sync_file(path, pair, on_status.clone()).await;
                             }
                         };
@@ -428,7 +454,7 @@ impl SyncEngine {
             on_status(SyncStatus::Uploaded { pair_id, path: path_str.clone() });
             let on_status_clone = on_status.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 on_status_clone(SyncStatus::Idle { pair_id });
             });
         }
@@ -774,7 +800,7 @@ impl SyncEngine {
                 
                 let on_status_clone = on_status.clone();
                 tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     on_status_clone(SyncStatus::Idle { pair_id });
                 });
             }

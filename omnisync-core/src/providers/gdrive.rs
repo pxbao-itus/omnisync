@@ -105,7 +105,7 @@ impl CloudProvider for GoogleDriveProvider {
             };
 
             if matches {
-                println!("File {} content matches cloud, skipping upload", filename);
+                // println!("File {} content matches cloud, skipping upload", filename);
                 return Ok(());
             }
 
