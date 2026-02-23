@@ -140,6 +140,41 @@ impl CloudProvider for GoogleDriveProvider {
         Ok(())
     }
 
+    async fn create_folder(&self, name: &str, parent_id: &str) -> CloudResult<String> {
+        // Check if exists
+        if let Some(existing_id) = self.find_file_id(name, parent_id).await? {
+            return Ok(existing_id);
+        }
+
+        let metadata = serde_json::json!({
+            "name": name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_id]
+        });
+
+        let response = self.client
+            .post("https://www.googleapis.com/drive/v3/files")
+            .bearer_auth(&self.access_token)
+            .json(&metadata)
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(CloudError::Unauthenticated);
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(CloudError::ApiError(format!("Create folder failed: {}", error_text)));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        let id = body["id"].as_str().ok_or_else(|| CloudError::ApiError("No ID returned".to_string()))?.to_string();
+        
+        println!("Created folder {} on Google Drive", name);
+        Ok(id)
+    }
+
     async fn delete_file(&self, filename: &str, cloud_parent: &str) -> CloudResult<()> {
         let existing_id = self.find_file_id(filename, cloud_parent).await?;
 
@@ -166,10 +201,10 @@ impl CloudProvider for GoogleDriveProvider {
     }
 
     async fn list_files(&self, folder_id: &str) -> CloudResult<Vec<crate::provider::RemoteFile>> {
-        let q = format!("'{}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false", folder_id);
+        let q = format!("'{}' in parents and trashed = false", folder_id);
         let response = self.client
             .get("https://www.googleapis.com/drive/v3/files")
-            .query(&[("q", q.as_str()), ("fields", "files(id, name)")])
+            .query(&[("q", q.as_str()), ("fields", "files(id, name, mimeType)")])
             .bearer_auth(&self.access_token)
             .send()
             .await?;
@@ -189,7 +224,9 @@ impl CloudProvider for GoogleDriveProvider {
         let files = files_json.iter().filter_map(|f| {
             let id = f["id"].as_str()?.to_string();
             let name = f["name"].as_str()?.to_string();
-            Some(crate::provider::RemoteFile { id, name })
+            let mime_type = f["mimeType"].as_str()?;
+            let is_dir = mime_type == "application/vnd.google-apps.folder";
+            Some(crate::provider::RemoteFile { id, name, is_dir })
         }).collect();
 
         Ok(files)

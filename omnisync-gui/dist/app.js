@@ -12,6 +12,8 @@ let activeFilter = 'all';
 let currentProvider = 'gdrive';
 let isConnected = false;
 let currentPair = null;
+let currentViewPath = null;
+let pairSyncStatuses = {}; // { pair_id: { type, path, message } }
 
 const mainContent = document.getElementById('main-content');
 const detailView = document.getElementById('detail-view');
@@ -22,23 +24,70 @@ const btnAddFile = document.getElementById('btn-add-file');
 // ---- Listen for Sync Status ----
 listen('sync-status', (event) => {
     const status = event.payload;
+    const { pair_id, path, type, message } = status.data || {};
+
+    // Store status for specific pair
+    if (pair_id) {
+        pairSyncStatuses[pair_id] = { type, path, message };
+        updateCardStatus(pair_id);
+    }
+
+    // Overall status indicator (top)
     const indicator = document.getElementById('sync-status-indicator');
     const statusText = document.getElementById('sync-status-text');
 
-    if (status.type === 'Idle') {
+    if (type === 'Idle') {
         indicator.style.display = 'none';
+        // If we are in detail view for this file, refresh it
+        if (currentPair && currentPair.id === pair_id) {
+            loadFileTable();
+        }
     } else {
         indicator.style.display = 'flex';
-        if (status.type === 'Syncing') {
-            statusText.textContent = `Syncing...`;
-        } else if (status.type === 'Uploaded') {
-            statusText.textContent = `Synced!`;
-        } else if (status.type === 'Error') {
+        if (type === 'Syncing' || type === 'Downloading') {
+            statusText.textContent = `${type === 'Syncing' ? 'Syncing' : 'Downloading'} ${path ? path.split(/[\\/]/).pop() : ''}...`;
+        } else if (type === 'Uploaded') {
+            statusText.textContent = `File Synced!`;
+        } else if (type === 'Error') {
             statusText.textContent = `Sync Error`;
-            showToast(`Sync Failed: ${status.data.message}`, 'error');
+            showToast(`Sync Failed: ${message}`, 'error');
         }
     }
+
+    // If detail view is open for this pair, we might want to refresh individual rows
+    if (currentPair && currentPair.id === pair_id) {
+        // Debounced refresh or targeted row update would be better, but let's try row update
+        const rows = document.querySelectorAll('#file-list-body tr');
+        rows.forEach(row => {
+            const rowPath = row.dataset.path;
+            if (rowPath && path && (path === rowPath || path.startsWith(rowPath + '/') || path.startsWith(rowPath + '\\'))) {
+                const statusCell = row.querySelector('.file-status-cell');
+                if (statusCell) {
+                    statusCell.innerHTML = renderFileStatus(type, message);
+                }
+            }
+        });
+    }
 });
+
+function updateCardStatus(pairId) {
+    const card = document.querySelector(`.folder-card[data-id="${pairId}"]`);
+    if (!card) return;
+
+    const statusObj = pairSyncStatuses[pairId];
+    const statusEl = card.querySelector('.folder-status');
+
+    if (statusObj.type === 'Idle' || !statusObj.type) {
+        statusEl.className = 'folder-status active';
+        statusEl.innerHTML = `<span class="status-dot"></span>${window.t('active')}`;
+    } else {
+        statusEl.className = `folder-status ${statusObj.type.toLowerCase()}`;
+        let label = statusObj.type;
+        if (statusObj.type === 'Syncing') label = 'Syncing...';
+        if (statusObj.type === 'Downloading') label = 'Downloading...';
+        statusEl.innerHTML = `<span class="status-dot"></span>${label}`;
+    }
+}
 
 // ---- DOM Elements ----
 const folderList = document.getElementById('folder-list');
@@ -179,7 +228,7 @@ function renderCard(pair) {
                     </span>
                 </div>
             </div>
-            <div class="folder-status ${statusClass}">
+            <div class="folder-status ${statusClass}" id="card-status-${pair.id}">
                 <span class="status-dot"></span>
                 ${statusLabel}
             </div>
@@ -456,6 +505,7 @@ async function openFolderDetail(id) {
     if (!pair) return;
 
     currentPair = pair;
+    currentViewPath = pair.local_path;
     document.getElementById('detail-folder-name').textContent = pair.local_path.split(/[\\/]/).pop() || pair.local_path;
     document.getElementById('detail-folder-path').textContent = pair.local_path;
 
@@ -467,10 +517,11 @@ async function openFolderDetail(id) {
 window.openFolderDetail = openFolderDetail;
 
 async function loadFileTable() {
-    if (!currentPair) return;
+    if (!currentPair || !currentViewPath) return;
 
     try {
-        const files = await invoke('list_local_files', { path: currentPair.local_path });
+        const files = await invoke('list_local_files', { path: currentViewPath });
+        document.getElementById('detail-folder-path').textContent = currentViewPath;
 
         // Sort: dirs first, then by name
         files.sort((a, b) => {
@@ -479,6 +530,21 @@ async function loadFileTable() {
         });
 
         fileListBody.innerHTML = files.map(file => renderFileRow(file)).join('');
+
+        // Apply current sync status to rows if any
+        if (currentPair && pairSyncStatuses[currentPair.id]) {
+            const statusObj = pairSyncStatuses[currentPair.id];
+            const rows = document.querySelectorAll('#file-list-body tr');
+            rows.forEach(row => {
+                const rowPath = row.dataset.path;
+                if (rowPath && statusObj.path && (statusObj.path === rowPath || statusObj.path.startsWith(rowPath + '/') || statusObj.path.startsWith(rowPath + '\\'))) {
+                    const statusCell = row.querySelector('.file-status-cell');
+                    if (statusCell) {
+                        statusCell.innerHTML = renderFileStatus(statusObj.type, statusObj.message);
+                    }
+                }
+            });
+        }
     } catch (err) {
         showToast(window.t('failed_connect') + ' ' + err, 'error');
     }
@@ -492,14 +558,15 @@ function renderFileRow(file) {
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
 
     return `
-        <tr>
+        <tr data-path="${file.path}">
             <td>
                 <div class="file-name-cell">
                     <span class="file-icon">${icon}</span>
-                    <span>${file.name}</span>
+                    <span class="${file.is_dir ? 'dir-link' : ''}" onclick="${file.is_dir ? `navigateToSubfolder('${file.path.replace(/\\/g, '/')}')` : ''}">${file.name}</span>
                 </div>
             </td>
             <td>${sizeStr}</td>
+            <td class="file-status-cell">${renderFileStatus('Idle')}</td>
             <td>${dateStr}</td>
             <td>
                 <div class="file-actions">
@@ -510,6 +577,22 @@ function renderFileRow(file) {
             </td>
         </tr>
     `;
+}
+
+function navigateToSubfolder(path) {
+    currentViewPath = path;
+    loadFileTable();
+}
+window.navigateToSubfolder = navigateToSubfolder;
+
+function renderFileStatus(type, message) {
+    if (type === 'Idle') return `<span class="file-status-idle">-</span>`;
+    if (type === 'Syncing') return `<span class="file-status-syncing">Uploading...</span>`;
+    if (type === 'Downloading') return `<span class="file-status-syncing">Downloading...</span>`;
+    if (type === 'Uploaded') return `<span class="file-status-uploaded">Synced</span>`;
+    if (type === 'Deleted') return `<span class="file-status-deleted">Deleted</span>`;
+    if (type === 'Error') return `<span class="file-status-error" title="${message}">Error</span>`;
+    return type;
 }
 
 async function deleteFile(path) {
@@ -527,21 +610,31 @@ async function deleteFile(path) {
 window.deleteFile = deleteFile;
 
 btnBack.addEventListener('click', () => {
-    mainContent.style.display = 'block';
-    detailView.style.display = 'none';
-    currentPair = null;
-    loadPairs(); // Refresh list
+    if (currentPair && currentViewPath && currentViewPath !== currentPair.local_path) {
+        // Go up one level
+        const path = currentViewPath.replace(/\\/g, '/');
+        const parts = path.split('/').filter(Boolean);
+        parts.pop();
+        currentViewPath = (path.startsWith('/') ? '/' : '') + parts.join('/');
+        loadFileTable();
+    } else {
+        mainContent.style.display = 'block';
+        detailView.style.display = 'none';
+        currentPair = null;
+        currentViewPath = null;
+        loadPairs(); // Refresh list
+    }
 });
 
 btnAddFile.addEventListener('click', async () => {
-    if (!currentPair) return;
+    if (!currentPair || !currentViewPath) return;
 
     try {
         const selected = await open({ multiple: false });
         if (selected) {
             showToast(window.t('adding_file'));
             const filename = selected.split(/[\\/]/).pop();
-            const dest = `${currentPair.local_path}/${filename}`;
+            const dest = `${currentViewPath}/${filename}`;
 
             await invoke('copy_file', { src: selected, dest });
             showToast(window.t('file_added'), 'success');

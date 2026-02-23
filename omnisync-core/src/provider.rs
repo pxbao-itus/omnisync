@@ -34,17 +34,21 @@ pub trait CloudProvider: Send + Sync {
     /// Get metadata for a file (hash, size, modified_at)
     async fn get_metadata(&self, cloud_path: &str) -> CloudResult<FileMetadata>;
 
-    /// List files in a specific folder
+    /// List files and folders in a specific folder
     async fn list_files(&self, folder_id: &str) -> CloudResult<Vec<RemoteFile>>;
 
     /// List folders in the cloud
     async fn list_folders(&self) -> CloudResult<Vec<RemoteFolder>>;
+
+    /// Create a folder in the cloud
+    async fn create_folder(&self, name: &str, parent_id: &str) -> CloudResult<String>;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RemoteFile {
     pub id: String,
     pub name: String,
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

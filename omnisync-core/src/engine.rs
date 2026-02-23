@@ -13,6 +13,7 @@ use std::time::{Instant, Duration};
 use rand::{Rng, thread_rng};
 use sha2::{Sha256, Digest};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use async_recursion::async_recursion;
 
 pub struct SyncEngine {
     pool: SqlitePool,
@@ -24,12 +25,12 @@ pub struct SyncEngine {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum SyncStatus {
-    Idle,
-    Syncing { path: String },
-    Downloading { path: String },
-    Uploaded { path: String },
-    Deleted { path: String },
-    Error { path: String, message: String },
+    Idle { pair_id: i64 },
+    Syncing { pair_id: i64, path: String },
+    Downloading { pair_id: i64, path: String },
+    Uploaded { pair_id: i64, path: String },
+    Deleted { pair_id: i64, path: String },
+    Error { pair_id: i64, path: String, message: String },
 }
 
 impl SyncEngine {
@@ -85,13 +86,27 @@ impl SyncEngine {
                     Ok(event) => {
                         println!("Watch event: {:?} for paths {:?}", event.kind, event.paths);
                         for path in &event.paths {
-                            if path.is_dir() && path.exists() { continue; }
-                            
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                if name.starts_with('.') { continue; }
+                            }
+
                             let pairs = self.get_sync_pairs().await.unwrap_or_default();
                             for pair in &pairs {
                                 if path.starts_with(&pair.local_path) {
                                     if path.exists() {
-                                        let _ = self.sync_file(path, pair, on_status.clone()).await;
+                                        if path.is_dir() {
+                                            // For directories, we just ensure they exist on remote
+                                            // The watcher is recursive, so it will trigger for files inside later
+                                            let creds = self.get_valid_credentials(&pair.provider_id).await.unwrap_or(None);
+                                            if let Some(creds) = creds {
+                                                let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
+                                                    Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
+                                                } else { continue; };
+                                                let _ = self.ensure_remote_path_exists(provider.as_ref(), pair, path).await;
+                                            }
+                                        } else {
+                                            let _ = self.sync_file(path, pair, on_status.clone()).await;
+                                        }
                                     } else {
                                         let _ = self.delete_remote_file(path, pair, on_status.clone()).await;
                                     }
@@ -110,6 +125,7 @@ impl SyncEngine {
                 let pairs = self.get_sync_pairs().await.unwrap_or_default();
                 for pair in &pairs {
                     if pair.status == "active" {
+                        println!("Syncing pair: {}", pair.local_path);
                         let _ = self.perform_initial_sync(pair, on_status.clone()).await;
                     }
                 }
@@ -142,24 +158,35 @@ impl SyncEngine {
                 return Ok(());
             };
 
-            let path_str = path.to_string_lossy().to_string();
-            on_status(SyncStatus::Syncing { path: path_str.clone() });
+            // Resolve parent ID for subfolders
+            let parent = path.parent().ok_or_else(|| anyhow::anyhow!("No parent"))?;
+            let remote_parent_id = match self.ensure_remote_path_exists(provider.as_ref(), pair, parent).await {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("Failed to resolve remote parent for {:?}: {:?}", path, e);
+                    return Err(e);
+                }
+            };
 
-            if let Err(e) = provider.upload_file(path, &pair.remote_path).await {
+            let path_str = path.to_string_lossy().to_string();
+            let pair_id = pair.id;
+            on_status(SyncStatus::Syncing { pair_id, path: path_str.clone() });
+
+            if let Err(e) = provider.upload_file(path, &remote_parent_id).await {
                 eprintln!("Upload error for {:?}: {:?}", path, e);
-                on_status(SyncStatus::Error { path: path_str.clone(), message: e.to_string() });
+                on_status(SyncStatus::Error { pair_id, path: path_str.clone(), message: e.to_string() });
                 if matches!(e, CloudError::Unauthenticated) {
                     let _ = self.disconnect_provider(&pair.provider_id).await;
                 }
                 return Err(e.into());
             } else {
                 println!("Successfully synced {:?} -> folder ID {}", path, pair.remote_path);
-                on_status(SyncStatus::Uploaded { path: path_str.clone() });
+                on_status(SyncStatus::Uploaded { pair_id, path: path_str.clone() });
 
                 let on_status_clone = on_status.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    on_status_clone(SyncStatus::Idle);
+                    on_status_clone(SyncStatus::Idle { pair_id });
                 });
             }
         }
@@ -173,44 +200,101 @@ impl SyncEngine {
         let local_path = Path::new(&pair.local_path);
         if !local_path.exists() { return Ok(()); }
 
-        println!("Performing bidirectional sync for folder: {:?}", local_path);
-
-        // 1. Get local files
-        let mut local_files = HashMap::new();
-        let mut entries = tokio::fs::read_dir(local_path).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            if entry.path().is_file() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                local_files.insert(name, entry.path());
-            }
-        }
-
-        // 2. Get remote files
         let creds = self.get_valid_credentials(&pair.provider_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
-        let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-            Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
+        let provider: Arc<dyn CloudProvider> = if pair.provider_id == "gdrive" {
+            Arc::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
         } else {
             return Ok(());
         };
-        let remote_files = provider.list_files(&pair.remote_path).await?;
 
-        // 3. Reconcile
-        // Local to Cloud (Upload if missing in Cloud)
-        for (name, path) in &local_files {
-            if !remote_files.iter().any(|f| &f.name == name) {
-                let _ = self.sync_file(path, pair, on_status.clone()).await;
+        self.sync_directory_recursive(local_path, &pair.remote_path, pair, &provider, &on_status).await
+    }
+
+    #[async_recursion]
+    async fn sync_directory_recursive<F>(
+        &self,
+        local_dir: &Path,
+        remote_dir_id: &str,
+        pair: &SyncPair,
+        provider: &Arc<dyn CloudProvider>,
+        on_status: &Arc<F>
+    ) -> Result<()>
+    where
+        F: Fn(SyncStatus) + Send + Sync + 'static,
+    {
+        println!("Recursive sync local:{:?} remote_id:{}", local_dir, remote_dir_id);
+
+        // 1. Get local files & dirs
+        let mut local_entries = HashMap::new();
+        let mut entries = tokio::fs::read_dir(local_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().to_string();
+            local_entries.insert(name, entry.path());
+        }
+
+        // 2. Get remote files & dirs
+        let remote_entries = provider.list_files(remote_dir_id).await?;
+
+        // 3. Reconcile: Local to Cloud
+        for (name, path) in &local_entries {
+            if name.starts_with('.') { continue; } // Skip hidden files like .DS_Store
+
+            if let Some(remote) = remote_entries.iter().find(|r| &r.name == name) {
+                if path.is_dir() {
+                    if remote.is_dir {
+                        self.sync_directory_recursive(path, &remote.id, pair, provider, on_status).await?;
+                    }
+                } else {
+                    if !remote.is_dir {
+                        // For now we just upload, in future check modified_at/hash
+                        let _ = self.sync_file(path, pair, on_status.clone()).await;
+                    }
+                }
+            } else {
+                // Missing in cloud
+                if path.is_dir() {
+                    let new_folder_id = provider.create_folder(name, remote_dir_id).await?;
+                    self.sync_directory_recursive(path, &new_folder_id, pair, provider, on_status).await?;
+                } else {
+                    let _ = self.sync_file(path, pair, on_status.clone()).await;
+                }
             }
         }
 
-        // Cloud to Local (Download if missing in Local)
-        for remote_file in &remote_files {
-            if !local_files.contains_key(&remote_file.name) {
-                let dest = local_path.join(&remote_file.name);
-                let _ = self.sync_remote_to_local(&remote_file.id, &dest, pair, on_status.clone()).await;
+        // 4. Reconcile: Cloud to Local
+        for remote in &remote_entries {
+            if !local_entries.contains_key(&remote.name) {
+                let dest = local_dir.join(&remote.name);
+                if remote.is_dir {
+                    tokio::fs::create_dir_all(&dest).await?;
+                    self.sync_directory_recursive(&dest, &remote.id, pair, provider, on_status).await?;
+                } else {
+                    let _ = self.sync_remote_to_local(&remote.id, &dest, pair, on_status.clone()).await;
+                }
             }
         }
 
         Ok(())
+    }
+
+    async fn ensure_remote_path_exists(&self, provider: &dyn CloudProvider, pair: &SyncPair, local_path: &Path) -> Result<String> {
+        let relative = local_path.strip_prefix(&pair.local_path)?;
+        let mut current_id = pair.remote_path.clone();
+        
+        for component in relative.components() {
+            let name = component.as_os_str().to_string_lossy();
+            if name == "." || name == "/" { continue; }
+
+            let entries = provider.list_files(&current_id).await?;
+            if let Some(folder) = entries.iter().find(|e| e.name == name && e.is_dir) {
+                current_id = folder.id.clone();
+            } else {
+                // Folder missing on remote, create it
+                current_id = provider.create_folder(&name, &current_id).await?;
+            }
+        }
+        
+        Ok(current_id)
     }
 
     pub async fn sync_remote_to_local<F>(&self, file_id: &str, dest: &Path, pair: &SyncPair, on_status: Arc<F>) -> Result<()>
@@ -225,11 +309,12 @@ impl SyncEngine {
         };
 
         let path_str = dest.to_string_lossy().to_string();
-        on_status(SyncStatus::Downloading { path: path_str.clone() });
+        let pair_id = pair.id;
+        on_status(SyncStatus::Downloading { pair_id, path: path_str.clone() });
 
         if let Err(e) = provider.download_file(file_id, dest).await {
             eprintln!("Download error: {:?}", e);
-            on_status(SyncStatus::Error { path: path_str.clone(), message: e.to_string() });
+            on_status(SyncStatus::Error { pair_id, path: path_str.clone(), message: e.to_string() });
             return Err(e.into());
         } else {
             println!("Successfully downloaded -> {:?}", dest);
@@ -240,11 +325,11 @@ impl SyncEngine {
                 cache.insert(dest.to_path_buf(), Instant::now());
             }
 
-            on_status(SyncStatus::Uploaded { path: path_str.clone() });
+            on_status(SyncStatus::Uploaded { pair_id, path: path_str.clone() });
             let on_status_clone = on_status.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                on_status_clone(SyncStatus::Idle);
+                on_status_clone(SyncStatus::Idle { pair_id });
             });
         }
         Ok(())
@@ -565,21 +650,32 @@ impl SyncEngine {
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
 
+            // Resolve parent ID for subfolders
+            let parent = path.parent().ok_or_else(|| anyhow::anyhow!("No parent"))?;
+            let remote_parent_id = match self.ensure_remote_path_exists(provider.as_ref(), pair, parent).await {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("Failed to resolve remote parent for deletion {:?}: {:?}", path, e);
+                    return Err(e);
+                }
+            };
+
             let path_str = path.to_string_lossy().to_string();
+            let pair_id = pair.id;
             
-            if let Err(e) = provider.delete_file(filename, &pair.remote_path).await {
+            if let Err(e) = provider.delete_file(filename, &remote_parent_id).await {
                 eprintln!("Delete error: {:?}", e);
                 if matches!(e, CloudError::Unauthenticated) {
                     let _ = self.disconnect_provider(&pair.provider_id).await;
                 }
                 return Err(e.into());
             } else {
-                on_status(SyncStatus::Deleted { path: path_str.clone() });
+                on_status(SyncStatus::Deleted { pair_id, path: path_str.clone() });
                 
                 let on_status_clone = on_status.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    on_status_clone(SyncStatus::Idle);
+                    on_status_clone(SyncStatus::Idle { pair_id });
                 });
             }
         }
