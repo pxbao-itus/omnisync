@@ -49,6 +49,9 @@ pub struct RemoteFile {
     pub id: String,
     pub name: String,
     pub is_dir: bool,
+    pub size: Option<u64>,
+    pub modified_at: Option<i64>,
+    pub hash: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -59,7 +62,7 @@ pub struct RemoteFolder {
 
 #[derive(Debug, Clone)]
 pub struct FileMetadata {
-    pub hash: String,
-    pub size: u64,
-    pub modified_at: i64,
+    pub hash: Option<String>,
+    pub size: Option<u64>,
+    pub modified_at: Option<i64>,
 }

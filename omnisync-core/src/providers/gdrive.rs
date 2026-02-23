@@ -19,12 +19,12 @@ impl GoogleDriveProvider {
         }
     }
 
-    async fn find_file_id(&self, name: &str, parent_id: &str) -> CloudResult<Option<String>> {
+    async fn find_file_info(&self, name: &str, parent_id: &str) -> CloudResult<Option<(String, Option<u64>, Option<i64>, Option<String>)>> {
         let escaped_name = name.replace("'", "\\'");
         let q = format!("name = '{}' and '{}' in parents and trashed = false", escaped_name, parent_id);
         let response = self.client
             .get("https://www.googleapis.com/drive/v3/files")
-            .query(&[("q", q.as_str()), ("fields", "files(id)")])
+            .query(&[("q", q.as_str()), ("fields", "files(id, size, modifiedTime, md5Checksum)")])
             .bearer_auth(&self.access_token)
             .send()
             .await?;
@@ -41,7 +41,31 @@ impl GoogleDriveProvider {
         let body: serde_json::Value = response.json().await?;
         let files = body["files"].as_array().ok_or_else(|| CloudError::ApiError("Invalid search response".to_string()))?;
         
-        Ok(files.first().and_then(|f| f["id"].as_str()).map(|s| s.to_string()))
+        if let Some(f) = files.first() {
+            let id = f["id"].as_str().map(|s| s.to_string());
+            let size = f["size"].as_str().and_then(|s| s.parse().ok());
+            let hash = f["md5Checksum"].as_str().map(|s| s.to_string());
+            let modified_at = f["modifiedTime"].as_str().and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
+            });
+            if let Some(id) = id {
+                return Ok(Some((id, size, modified_at, hash)));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn compute_local_hash(&self, path: &Path) -> CloudResult<String> {
+        let mut file = File::open(path).await?;
+        let mut hasher = md5::Context::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let n = file.read(&mut buffer).await?;
+            if n == 0 { break; }
+            hasher.consume(&buffer[..n]);
+        }
+        let digest = hasher.compute();
+        Ok(format!("{:x}", digest))
     }
 }
 
@@ -62,9 +86,29 @@ impl CloudProvider for GoogleDriveProvider {
             .ok_or_else(|| CloudError::Other(anyhow!("Invalid filename")))?;
 
         // Check if file already exists
-        let existing_id = self.find_file_id(filename, _cloud_path).await?;
+        let local_meta = tokio::fs::metadata(local_path).await?;
+        let local_size = local_meta.len();
+        
+        // Compute hash for more reliable comparison
+        let local_hash = self.compute_local_hash(local_path).await?;
 
-        if let Some(file_id) = existing_id {
+        let existing_info = self.find_file_info(filename, _cloud_path).await?;
+
+        if let Some((file_id, r_size, _r_mtime, r_hash)) = existing_info {
+            // Compare hash if available, otherwise fallback to size
+            let matches = if let Some(hash) = r_hash {
+                hash == local_hash
+            } else if let Some(size) = r_size {
+                local_size == size
+            } else {
+                false
+            };
+
+            if matches {
+                println!("File {} content matches cloud, skipping upload", filename);
+                return Ok(());
+            }
+
             // Update existing file: PATCH https://www.googleapis.com/upload/drive/v3/files/{fileId}?uploadType=media
             let response = self.client
                 .patch(format!("https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media", file_id))
@@ -142,7 +186,7 @@ impl CloudProvider for GoogleDriveProvider {
 
     async fn create_folder(&self, name: &str, parent_id: &str) -> CloudResult<String> {
         // Check if exists
-        if let Some(existing_id) = self.find_file_id(name, parent_id).await? {
+        if let Some((existing_id, _, _, _)) = self.find_file_info(name, parent_id).await? {
             return Ok(existing_id);
         }
 
@@ -176,9 +220,9 @@ impl CloudProvider for GoogleDriveProvider {
     }
 
     async fn delete_file(&self, filename: &str, cloud_parent: &str) -> CloudResult<()> {
-        let existing_id = self.find_file_id(filename, cloud_parent).await?;
+        let existing_info = self.find_file_info(filename, cloud_parent).await?;
 
-        if let Some(file_id) = existing_id {
+        if let Some((file_id, _, _, _)) = existing_info {
             // DELETE https://www.googleapis.com/drive/v3/files/{fileId}
             let response = self.client
                 .delete(format!("https://www.googleapis.com/drive/v3/files/{}", file_id))
@@ -204,7 +248,7 @@ impl CloudProvider for GoogleDriveProvider {
         let q = format!("'{}' in parents and trashed = false", folder_id);
         let response = self.client
             .get("https://www.googleapis.com/drive/v3/files")
-            .query(&[("q", q.as_str()), ("fields", "files(id, name, mimeType)")])
+            .query(&[("q", q.as_str()), ("fields", "files(id, name, mimeType, size, modifiedTime, md5Checksum)")])
             .bearer_auth(&self.access_token)
             .send()
             .await?;
@@ -226,7 +270,20 @@ impl CloudProvider for GoogleDriveProvider {
             let name = f["name"].as_str()?.to_string();
             let mime_type = f["mimeType"].as_str()?;
             let is_dir = mime_type == "application/vnd.google-apps.folder";
-            Some(crate::provider::RemoteFile { id, name, is_dir })
+            let size = f["size"].as_str().and_then(|s| s.parse().ok());
+            let hash = f["md5Checksum"].as_str().map(|s| s.to_string());
+            let modified_at = f["modifiedTime"].as_str().and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
+            });
+
+            Some(crate::provider::RemoteFile { 
+                id, 
+                name, 
+                is_dir,
+                size,
+                modified_at,
+                hash,
+            })
         }).collect();
 
         Ok(files)
@@ -234,9 +291,9 @@ impl CloudProvider for GoogleDriveProvider {
 
     async fn get_metadata(&self, _cloud_path: &str) -> CloudResult<FileMetadata> {
         Ok(FileMetadata {
-            hash: "dummy".to_string(),
-            size: 0,
-            modified_at: 0,
+            hash: Some("dummy".to_string()),
+            size: Some(0),
+            modified_at: Some(0),
         })
     }
 

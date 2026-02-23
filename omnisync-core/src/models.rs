@@ -10,6 +10,7 @@ pub struct SyncPair {
     pub provider_id: String,
     pub status: String,
     pub created_at: i64,
+    pub last_sync_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

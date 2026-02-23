@@ -77,50 +77,77 @@ impl SyncEngine {
         let mut last_poll = Instant::now();
         
         loop {
-            // Check for filesystem events
+            // Collect events for a short period to group them
+            let mut pending_paths: HashMap<PathBuf, notify::EventKind> = HashMap::new();
+            
+            // Drain current channel
             while let Some(event_result) = {
                 let watcher_guard = self.watcher.lock().await;
                 watcher_guard.try_recv()
             } {
-                match event_result {
-                    Ok(event) => {
-                        println!("Watch event: {:?} for paths {:?}", event.kind, event.paths);
-                        for path in &event.paths {
-                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                                if name.starts_with('.') { continue; }
-                            }
+                if let Ok(event) = event_result {
+                    for path in event.paths {
+                        pending_paths.insert(path, event.kind);
+                    }
+                }
+            }
 
-                            let pairs = self.get_sync_pairs().await.unwrap_or_default();
-                            for pair in &pairs {
-                                if path.starts_with(&pair.local_path) {
+            if !pending_paths.is_empty() {
+                let pairs = self.get_sync_pairs().await.unwrap_or_default();
+                for (path, kind) in pending_paths {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" { continue; }
+                    }
+
+                    for pair in &pairs {
+                        if pair.status == "active" && path.starts_with(&pair.local_path) {
+                            match kind {
+                                notify::EventKind::Remove(_) => {
+                                    let _ = self.delete_remote_file(&path, pair, on_status.clone()).await;
+                                }
+                                notify::EventKind::Modify(m) => {
+                                    // Only sync on data/metadata changes, skip simple access
+                                    if !matches!(m, notify::event::ModifyKind::Any | notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Metadata(_)) {
+                                        continue;
+                                    }
                                     if path.exists() {
                                         if path.is_dir() {
-                                            // For directories, we just ensure they exist on remote
-                                            // The watcher is recursive, so it will trigger for files inside later
                                             let creds = self.get_valid_credentials(&pair.provider_id).await.unwrap_or(None);
                                             if let Some(creds) = creds {
                                                 let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
                                                     Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
                                                 } else { continue; };
-                                                let _ = self.ensure_remote_path_exists(provider.as_ref(), pair, path).await;
+                                                let _ = self.ensure_remote_path_exists(provider.as_ref(), pair, &path).await;
                                             }
                                         } else {
-                                            let _ = self.sync_file(path, pair, on_status.clone()).await;
+                                            let _ = self.sync_file(&path, pair, on_status.clone()).await;
                                         }
-                                    } else {
-                                        let _ = self.delete_remote_file(path, pair, on_status.clone()).await;
                                     }
                                 }
+                                notify::EventKind::Create(_) => {
+                                    if path.exists() {
+                                        if path.is_dir() {
+                                            let creds = self.get_valid_credentials(&pair.provider_id).await.unwrap_or(None);
+                                            if let Some(creds) = creds {
+                                                let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
+                                                    Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
+                                                } else { continue; };
+                                                let _ = self.ensure_remote_path_exists(provider.as_ref(), pair, &path).await;
+                                            }
+                                        } else {
+                                            let _ = self.sync_file(&path, pair, on_status.clone()).await;
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
-                    Err(e) => eprintln!("Watch error: {:?}", e),
                 }
             }
 
-            // Periodic cloud poll (every 30s)
-            if last_poll.elapsed() > Duration::from_secs(30) {
-                last_poll = Instant::now();
+            // Periodic cloud poll (every 60s)
+            if last_poll.elapsed() > Duration::from_secs(60) {
                 println!("Performing periodic cloud poll...");
                 let pairs = self.get_sync_pairs().await.unwrap_or_default();
                 for pair in &pairs {
@@ -129,9 +156,10 @@ impl SyncEngine {
                         let _ = self.perform_initial_sync(pair, on_status.clone()).await;
                     }
                 }
+                last_poll = Instant::now();
             }
 
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
 
@@ -139,11 +167,11 @@ impl SyncEngine {
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
-        // 1. Debounce check: Avoid multiple syncs for the same file in short period (2s)
+        // 1. Debounce check: Avoid multiple syncs for the same file in short period (5s)
         {
             let mut cache = self.sync_cache.lock().await;
             if let Some(last) = cache.get(path) {
-                if last.elapsed() < Duration::from_secs(2) {
+                if last.elapsed() < Duration::from_secs(5) {
                     return Ok(());
                 }
             }
@@ -183,6 +211,12 @@ impl SyncEngine {
                 println!("Successfully synced {:?} -> folder ID {}", path, pair.remote_path);
                 on_status(SyncStatus::Uploaded { pair_id, path: path_str.clone() });
 
+                // Update cache again after successful sync to prevent buffered events from re-triggering
+                {
+                    let mut cache = self.sync_cache.lock().await;
+                    cache.insert(path.to_path_buf(), Instant::now());
+                }
+
                 let on_status_clone = on_status.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -207,7 +241,17 @@ impl SyncEngine {
             return Ok(());
         };
 
-        self.sync_directory_recursive(local_path, &pair.remote_path, pair, &provider, &on_status).await
+        self.sync_directory_recursive(local_path, &pair.remote_path, pair, &provider, &on_status).await?;
+
+        // Update last sync time
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        sqlx::query("UPDATE sync_pairs SET last_sync_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(pair.id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
     }
 
     #[async_recursion]
@@ -237,7 +281,7 @@ impl SyncEngine {
 
         // 3. Reconcile: Local to Cloud
         for (name, path) in &local_entries {
-            if name.starts_with('.') { continue; } // Skip hidden files like .DS_Store
+            if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" { continue; }
 
             if let Some(remote) = remote_entries.iter().find(|r| &r.name == name) {
                 if path.is_dir() {
@@ -246,23 +290,79 @@ impl SyncEngine {
                     }
                 } else {
                     if !remote.is_dir {
-                        // For now we just upload, in future check modified_at/hash
-                        let _ = self.sync_file(path, pair, on_status.clone()).await;
+                        // Check if file needs syncing
+                        let local_meta = tokio::fs::metadata(path).await?;
+                        let local_size = local_meta.len();
+                        let local_mtime = local_meta.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+
+                        match (remote.size, remote.modified_at, &remote.hash) {
+                            (Some(_r_size), Some(r_mtime), Some(r_hash)) => {
+                                let local_hash = self.compute_local_hash(path).await?;
+                                if local_hash != *r_hash {
+                                    if local_mtime > r_mtime {
+                                        // Local is newer and content different - upload
+                                        let _ = self.sync_file(path, pair, on_status.clone()).await;
+                                    } else {
+                                        // Cloud is newer and content different - download
+                                        let _ = self.sync_remote_to_local(&remote.id, path, pair, on_status.clone()).await;
+                                    }
+                                }
+                            }
+                            (Some(r_size), Some(r_mtime), None) => {
+                                // Fallback to mtime/size if hash missing
+                                if local_mtime > r_mtime {
+                                    let _ = self.sync_file(path, pair, on_status.clone()).await;
+                                } else if r_mtime > local_mtime || local_size != r_size {
+                                    let _ = self.sync_remote_to_local(&remote.id, path, pair, on_status.clone()).await;
+                                }
+                            }
+                            _ => {
+                                // Fallback to upload if metadata missing
+                                let _ = self.sync_file(path, pair, on_status.clone()).await;
+                            }
+                        };
                     }
                 }
             } else {
                 // Missing in cloud
+                let local_meta = tokio::fs::metadata(path).await?;
+                let local_mtime = local_meta.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                
+                let mut was_there_before = false;
+                if let Some(last_sync) = pair.last_sync_at {
+                    if local_mtime < last_sync {
+                        was_there_before = true;
+                    }
+                }
+
                 if path.is_dir() {
-                    let new_folder_id = provider.create_folder(name, remote_dir_id).await?;
-                    self.sync_directory_recursive(path, &new_folder_id, pair, provider, on_status).await?;
+                    if was_there_before {
+                        println!("Directory {:?} missing on cloud (was there before), deleting locally", path);
+                        let _ = tokio::fs::remove_dir_all(path).await;
+                    } else {
+                        let new_folder_id = provider.create_folder(name, remote_dir_id).await?;
+                        self.sync_directory_recursive(path, &new_folder_id, pair, provider, on_status).await?;
+                    }
                 } else {
-                    let _ = self.sync_file(path, pair, on_status.clone()).await;
+                    if was_there_before {
+                        println!("File {:?} missing on cloud (was there before), deleting locally", path);
+                        let path_str = path.to_string_lossy().to_string();
+                        let pair_id = pair.id;
+                        if let Err(e) = tokio::fs::remove_file(path).await {
+                            eprintln!("Failed to delete local file {:?}: {:?}", path, e);
+                        } else {
+                            on_status(SyncStatus::Deleted { pair_id, path: path_str });
+                        }
+                    } else {
+                        let _ = self.sync_file(path, pair, on_status.clone()).await;
+                    }
                 }
             }
         }
 
         // 4. Reconcile: Cloud to Local
         for remote in &remote_entries {
+            if remote.name.starts_with('.') || remote.name == "node_modules" || remote.name == "target" || remote.name == "dist" { continue; }
             if !local_entries.contains_key(&remote.name) {
                 let dest = local_dir.join(&remote.name);
                 if remote.is_dir {
@@ -358,7 +458,7 @@ impl SyncEngine {
 
     pub async fn remove_sync_pair(&self, id: i64) -> Result<()> {
         let pair: Option<SyncPair> = sqlx::query_as::<_, SyncPair>(
-            "SELECT id, local_path, remote_path, remote_name, provider_id, status, created_at FROM sync_pairs WHERE id = ?"
+            "SELECT id, local_path, remote_path, remote_name, provider_id, status, created_at, last_sync_at FROM sync_pairs WHERE id = ?"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -380,7 +480,7 @@ impl SyncEngine {
     pub async fn get_sync_pairs(&self) -> Result<Vec<SyncPair>> {
         let pairs = sqlx::query_as::<_, SyncPair>(
             r#"
-            SELECT id, local_path, remote_path, remote_name, provider_id, status, created_at
+            SELECT id, local_path, remote_path, remote_name, provider_id, status, created_at, last_sync_at
             FROM sync_pairs
             "#
         )
@@ -680,5 +780,18 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    async fn compute_local_hash(&self, path: &Path) -> Result<String> {
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut hasher = md5::Context::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let n = file.read(&mut buffer).await?;
+            if n == 0 { break; }
+            hasher.consume(&buffer[..n]);
+        }
+        let digest = hasher.compute();
+        Ok(format!("{:x}", digest))
     }
 }
