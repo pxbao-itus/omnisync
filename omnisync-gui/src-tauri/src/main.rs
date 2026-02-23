@@ -4,7 +4,6 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 use std::sync::Arc;
 use tauri::{Manager, State};
-use tokio::sync::Mutex;
 
 // Shared app state
 struct AppState {
@@ -167,7 +166,6 @@ async fn start_oauth(app: tauri::AppHandle, state: State<'_, AppState>, provider
         return Err("Provider not supported".to_string());
     }
 
-    use tauri_plugin_shell::ShellExt;
     let client_id = omnisync_core::config::get_google_client_id();
     let client_secret = omnisync_core::config::get_google_client_secret();
 
@@ -175,22 +173,25 @@ async fn start_oauth(app: tauri::AppHandle, state: State<'_, AppState>, provider
         return Err("Google OAuth Client ID not configured in .env file".to_string());
     }
 
+    let (code_verifier, code_challenge) = omnisync_core::SyncEngine::generate_pkce();
+
     let auth_url = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri=http://127.0.0.1:4420&response_type=code&scope=https://www.googleapis.com/auth/drive&access_type=offline&prompt=consent",
-        client_id
+        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri=http://127.0.0.1:4420&response_type=code&scope=https://www.googleapis.com/auth/drive&access_type=offline&prompt=consent&code_challenge={}&code_challenge_method=S256",
+        client_id, code_challenge
     );
 
     // Start the auth listener in the background *before* opening the browser
     let engine = state.engine.clone();
     let auth_handle = tauri::async_runtime::spawn(async move {
-        engine.authenticate_google(&client_id, &client_secret).await
+        engine.authenticate_google(&client_id, &client_secret, code_verifier).await
     });
 
     // Short sleep to give the background task time to bind the TcpListener
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Open browser effectively
-    app.shell().open(auth_url, None).map_err(|e| e.to_string())?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(auth_url, None::<String>).map_err(|e| e.to_string())?;
 
     // Now wait for the background task to finish the auth flow
     auth_handle.await
@@ -214,6 +215,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
             

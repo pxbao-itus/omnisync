@@ -10,6 +10,9 @@ use tokio::net::TcpListener;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, Duration};
+use rand::{Rng, thread_rng};
+use sha2::{Sha256, Digest};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
 pub struct SyncEngine {
     pool: SqlitePool,
@@ -466,7 +469,20 @@ impl SyncEngine {
         }
     }
 
-    pub async fn authenticate_google(&self, client_id: &str, client_secret: &str) -> Result<()> {
+    pub fn generate_pkce() -> (String, String) {
+        let mut rng = thread_rng();
+        let verifier: String = (0..64)
+            .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
+            .collect();
+
+        let mut hasher = Sha256::new();
+        hasher.update(verifier.as_bytes());
+        let challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
+
+        (verifier, challenge)
+    }
+
+    pub async fn authenticate_google(&self, client_id: &str, client_secret: &str, code_verifier: String) -> Result<()> {
         let redirect_uri = "http://127.0.0.1:4420";
         let auth_url = format!(
             "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=https://www.googleapis.com/auth/drive&access_type=offline&prompt=consent",
@@ -497,6 +513,7 @@ impl SyncEngine {
             ("client_secret", client_secret),
             ("redirect_uri", redirect_uri),
             ("grant_type", "authorization_code"),
+            ("code_verifier", &code_verifier),
         ];
 
         let response = client.post("https://oauth2.googleapis.com/token")
