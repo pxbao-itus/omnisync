@@ -27,7 +27,7 @@
             </div>
 
             <nav class="sidebar-nav">
-                <div class="nav-label">Providers</div>
+                <div class="nav-label" data-i18n="providers">Providers</div>
                 <button class="nav-item active" data-provider="all">
                     <span class="nav-icon">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -37,7 +37,7 @@
                                 d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
                         </svg>
                     </span>
-                    <span class="nav-text">All Providers</span>
+                    <span class="nav-text" data-i18n="all_providers">All Providers</span>
                     <span class="nav-badge" id="badge-all">0</span>
                 </button>
                 <button class="nav-item" data-provider="gdrive">
@@ -59,6 +59,8 @@
                     </span>
                     <span class="nav-text">iCloud</span>
                     <span class="nav-badge" id="badge-icloud">0</span>
+                    <span class="provider-soon" data-i18n="soon"
+                        style="margin-left:auto; font-size:9px; background:var(--bg-tertiary); padding:2px 6px; border-radius:4px; font-weight:600; text-transform:uppercase; color:var(--text-tertiary);">Soon</span>
                 </button>
                 <button class="nav-item" data-provider="onedrive">
                     <span class="nav-icon">
@@ -68,6 +70,8 @@
                     </span>
                     <span class="nav-text">OneDrive</span>
                     <span class="nav-badge" id="badge-onedrive">0</span>
+                    <span class="provider-soon" data-i18n="soon"
+                        style="margin-left:auto; font-size:9px; background:var(--bg-tertiary); padding:2px 6px; border-radius:4px; font-weight:600; text-transform:uppercase; color:var(--text-tertiary);">Soon</span>
                 </button>
             </nav>
 
@@ -75,8 +79,15 @@
                 <div id="user-profile" class="user-profile" style="display: none;">
                     <!-- Dynamically populated -->
                 </div>
+                <div class="lang-switcher" style="display: flex; gap: 4px; margin-bottom: 8px;">
+                    <button class="lang-btn active" data-lang="en" onclick="setLanguage('en')"
+                        style="flex: 1; padding: 4px; font-size: 11px; font-weight: 600; border-radius: 4px; border: 1px solid var(--border-subtle); background: var(--bg-tertiary); color: var(--text-secondary); cursor: pointer;">EN</button>
+                    <button class="lang-btn" data-lang="vi" onclick="setLanguage('vi')"
+                        style="flex: 1; padding: 4px; font-size: 11px; font-weight: 600; border-radius: 4px; border: 1px solid var(--border-subtle); background: var(--bg-tertiary); color: var(--text-secondary); cursor: pointer;">VI</button>
+                </div>
                 <div class="theme-switcher">
-                    <button class="theme-btn" data-theme-mode="system" title="System Theme">
+                    <button class="theme-btn" data-theme-mode="system" data-i18n-title="system_theme"
+                        title="System Theme">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2">
                             <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
@@ -84,7 +95,7 @@
                             <line x1="12" y1="17" x2="12" y2="21"></line>
                         </svg>
                     </button>
-                    <button class="theme-btn" data-theme-mode="light" title="Light Theme">
+                    <button class="theme-btn" data-theme-mode="light" data-i18n-title="light_theme" title="Light Theme">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2">
                             <circle cx="12" cy="12" r="5"></circle>
@@ -98,7 +109,7 @@
                             <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
                         </svg>
                     </button>
-                    <button class="theme-btn" data-theme-mode="dark" title="Dark Theme">
+                    <button class="theme-btn" data-theme-mode="dark" data-i18n-title="dark_theme" title="Dark Theme">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2">
                             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
@@ -114,21 +125,21 @@
             <!-- Header -->
             <header class="header">
                 <div class="header-left">
-                    <h1 class="header-title">Synced Folders</h1>
-                    <p class="header-subtitle" id="subtitle">Manage your synchronized directories</p>
+                    <h1 class="header-title" data-i18n="synced_folders">Synced Folders</h1>
+                    <p class="header-subtitle" id="subtitle" data-i18n="manage_directories">Manage your synchronized
+                        directories</p>
                 </div>
                 <div id="sync-status-indicator"
                     style="display: none; align-items: center; gap: 8px; background: rgba(0, 210, 255, 0.1); border: 1px solid rgba(0, 210, 255, 0.2); padding: 6px 14px; border-radius: 20px; font-size: 11px; color: #00d2ff; margin-right: 16px;">
                     <div class="sync-spinner"></div>
-                    <span id="sync-status-text">Syncing...</span>
+                    <span id="sync-status-text" data-i18n="syncing">Syncing...</span>
                 </div>
-                <button class="btn-add" id="btn-add">
+                <button class="btn-add" id="btn-add" data-i18n="add_folder">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
                         stroke-linecap="round">
                         <line x1="12" y1="5" x2="12" y2="19" />
                         <line x1="5" y1="12" x2="19" y2="12" />
-                    </svg>
-                    Add Folder
+                    </svg> Add Folder
                 </button>
             </header>
 
@@ -148,43 +159,42 @@
                             <line x1="9" y1="14" x2="15" y2="14" />
                         </svg>
                     </div>
-                    <h2 class="empty-title">No folders synced yet</h2>
-                    <p class="empty-desc">Click "Add Folder" to start syncing a directory with your cloud provider.</p>
+                    <h2 class="empty-title" data-i18n="no_folders">No folders synced yet</h2>
+                    <p class="empty-desc" data-i18n="no_folders_desc">Click "Add Folder" to start syncing a directory
+                        with your cloud provider.</p>
                 </div>
             </div>
 
             <!-- Detail View -->
             <div class="content" id="detail-view" style="display: none;">
                 <div class="view-header">
-                    <button class="btn-back" id="btn-back">
+                    <button class="btn-back" id="btn-back" data-i18n="back">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2">
                             <line x1="19" y1="12" x2="5" y2="12" />
                             <polyline points="12 19 5 12 12 5" />
-                        </svg>
-                        Back
+                        </svg> Back
                     </button>
                     <div class="header-info">
                         <h2 id="detail-folder-name">Folder Name</h2>
                         <p id="detail-folder-path">/path/to/folder</p>
                     </div>
-                    <button class="btn-add-file" id="btn-add-file">
+                    <button class="btn-add-file" id="btn-add-file" data-i18n="add_file">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2.5">
                             <line x1="12" y1="5" x2="12" y2="19" />
                             <line x1="5" y1="12" x2="19" y2="12" />
-                        </svg>
-                        Add File
+                        </svg> Add File
                     </button>
                 </div>
                 <div class="file-list-container">
                     <table class="file-table">
                         <thead>
                             <tr>
-                                <th>Name</th>
-                                <th style="width: 100px;">Size</th>
-                                <th style="width: 150px;">Modified</th>
-                                <th style="width: 80px; text-align: center;">Actions</th>
+                                <th data-i18n="name">Name</th>
+                                <th style="width: 100px;" data-i18n="size">Size</th>
+                                <th style="width: 150px;" data-i18n="modified">Modified</th>
+                                <th style="width: 80px; text-align: center;" data-i18n="actions">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="file-list-body">
@@ -200,7 +210,7 @@
     <div class="modal-overlay" id="modal-overlay">
         <div class="modal">
             <div class="modal-header">
-                <h2 class="modal-title">Add Sync Folder</h2>
+                <h2 class="modal-title" data-i18n="add_sync_folder">Add Sync Folder</h2>
                 <button class="modal-close" id="modal-close">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                         stroke-linecap="round">
@@ -211,7 +221,7 @@
             </div>
             <form class="modal-form" id="add-form">
                 <div class="form-group">
-                    <label class="form-label">Cloud Provider</label>
+                    <label class="form-label" data-i18n="cloud_provider">Cloud Provider</label>
                     <div class="provider-grid">
                         <label class="provider-card selected" data-provider="gdrive">
                             <input type="radio" name="provider" value="gdrive" checked hidden />
@@ -223,7 +233,8 @@
                                 </svg>
                             </div>
                             <span class="provider-name">Google Drive</span>
-                            <div id="status-gdrive" class="provider-status">Not connected</div>
+                            <div id="status-gdrive" class="provider-status" data-i18n="not_connected">Not connected
+                            </div>
                         </label>
                         <label class="provider-card" data-provider="icloud">
                             <input type="radio" name="provider" value="icloud" hidden />
@@ -234,7 +245,7 @@
                                 </svg>
                             </div>
                             <span class="provider-name">iCloud</span>
-                            <span class="provider-soon">Soon</span>
+                            <span class="provider-soon" data-i18n="soon">Soon</span>
                         </label>
                         <label class="provider-card" data-provider="onedrive">
                             <input type="radio" name="provider" value="onedrive" hidden />
@@ -245,7 +256,7 @@
                                 </svg>
                             </div>
                             <span class="provider-name">OneDrive</span>
-                            <span class="provider-soon">Soon</span>
+                            <span class="provider-soon" data-i18n="soon">Soon</span>
                         </label>
                     </div>
                 </div>
@@ -255,10 +266,12 @@
                     <!-- Not Connected State -->
                     <div id="auth-disconnected">
                         <div class="form-group">
-                            <label class="form-label">Connect Account</label>
-                            <p class="form-help">Securely connect your Google account to start syncing.</p>
+                            <label class="form-label" data-i18n="connect_account">Connect Account</label>
+                            <p class="form-help" data-i18n="connect_desc">Securely connect your Google account to start
+                                syncing.</p>
                             <button type="button" class="btn-submit" id="btn-oauth"
-                                style="margin-top: 10px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 12px;">
+                                style="margin-top: 10px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 12px;"
+                                data-i18n="login_google">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
                                     <path d="M12 2L2 19.5h7.5L12 14l2.5 5.5H22L12 2z" fill="#4285F4" />
                                     <path d="M2 19.5l3.5-6L12 14l-2.5 5.5H2z" fill="#FBBC04" />
@@ -269,16 +282,17 @@
 
                             <div style="margin: 20px 0; display: flex; align-items: center; gap: 10px; opacity: 0.3;">
                                 <div style="flex: 1; height: 1px; background: white;"></div>
-                                <span style="font-size: 10px; text-transform: uppercase;">or</span>
+                                <span style="font-size: 10px; text-transform: uppercase;" data-i18n="or">or</span>
                                 <div style="flex: 1; height: 1px; background: white;"></div>
                             </div>
 
-                            <label class="form-label" style="font-size: 10px; opacity: 0.6;">Manual Access Token</label>
+                            <label class="form-label" style="font-size: 10px; opacity: 0.6;"
+                                data-i18n="manual_token">Manual Access Token</label>
                             <div class="input-row">
-                                <input type="password" class="form-input" id="input-token"
+                                <input type="password" class="form-input" id="input-token" data-i18n="paste_token"
                                     placeholder="Paste token..." />
-                                <button type="button" class="btn-browse" id="btn-connect"
-                                    style="font-size: 11px;">Connect</button>
+                                <button type="button" class="btn-browse" id="btn-connect" style="font-size: 11px;"
+                                    data-i18n="connect">Connect</button>
                             </div>
                         </div>
                     </div>
@@ -296,11 +310,12 @@
                                 </svg>
                             </div>
                             <div style="flex: 1;">
-                                <div style="font-size: 14px; font-weight: 600; color: #fff;">Account Connected</div>
+                                <div style="font-size: 14px; font-weight: 600; color: #fff;"
+                                    data-i18n="account_connected">Account Connected</div>
                                 <div style="font-size: 12px; color: rgba(255, 255, 255, 0.6);" id="connected-account">
                                     Google Drive</div>
                             </div>
-                            <button type="button" id="btn-disconnect"
+                            <button type="button" id="btn-disconnect" data-i18n="disconnect"
                                 style="padding: 6px 12px; background: rgba(255, 82, 82, 0.1); color: #ff5252; border: 1px solid rgba(255, 82, 82, 0.3); border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer;">Disconnect</button>
                         </div>
                     </div>
@@ -308,15 +323,15 @@
 
                 <div id="sync-fields" style="opacity: 0.5; pointer-events: none;">
                     <div class="form-group">
-                        <label class="form-label">Local Folder Path</label>
+                        <label class="form-label" data-i18n="local_path">Local Folder Path</label>
                         <div class="input-row">
                             <input type="text" class="form-input" id="input-local" placeholder="/home/user/Documents"
                                 required />
-                            <button type="button" class="btn-browse" id="btn-browse">Browse</button>
+                            <button type="button" class="btn-browse" id="btn-browse" data-i18n="browse">Browse</button>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Remote Folder (on Google Drive)</label>
+                        <label class="form-label" data-i18n="remote_folder">Remote Folder (on Google Drive)</label>
                         <select class="form-input" id="select-remote" required>
                             <option value="" disabled selected>Select a folder...</option>
                         </select>
@@ -324,13 +339,15 @@
                 </div>
 
                 <div class="modal-actions">
-                    <button type="button" class="btn-cancel" id="btn-cancel">Cancel</button>
-                    <button type="submit" class="btn-submit" id="btn-add-submit" disabled>Add Folder</button>
+                    <button type="button" class="btn-cancel" id="btn-cancel" data-i18n="cancel">Cancel</button>
+                    <button type="submit" class="btn-submit" id="btn-add-submit" disabled data-i18n="add_folder">Add
+                        Folder</button>
                 </div>
             </form>
         </div>
     </div>
 
+    <script src="i18n.js"></script>
     <script src="app.js"></script>
 </body>
 

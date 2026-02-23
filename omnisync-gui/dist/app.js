@@ -154,7 +154,7 @@ function render() {
 
 function renderCard(pair) {
     const statusClass = pair.status || 'active';
-    const statusLabel = statusClass.charAt(0).toUpperCase() + statusClass.slice(1);
+    const statusLabel = window.t(statusClass);
     const providerLabel = providerLabels[pair.provider_id] || pair.provider_id;
     const localBasename = pair.local_path.split('/').filter(Boolean).pop() || pair.local_path;
 
@@ -211,7 +211,7 @@ function updateUIForStatus(providerId, userInfo) {
     const card = document.querySelector(`.provider-card[data-provider="${providerId}"]`);
 
     if (statusEl) {
-        statusEl.textContent = connected ? 'Connected' : 'Not connected';
+        statusEl.textContent = connected ? window.t('connected') : window.t('not_connected');
         if (connected) {
             card.classList.add('connected');
         } else {
@@ -229,7 +229,7 @@ function updateUIForStatus(providerId, userInfo) {
                     ${userInfo.avatar ? `<img src="${userInfo.avatar}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`}
                 </div>
                 <div class="profile-info">
-                    <div class="profile-name">${userInfo.name || 'Connected'}</div>
+                    <div class="profile-name">${userInfo.name || window.t('connected')}</div>
                     <div class="profile-email">${userInfo.email || providerLabels[providerId]}</div>
                 </div>
             `;
@@ -260,7 +260,7 @@ function updateUIForStatus(providerId, userInfo) {
             }
 
             nameEl.innerHTML = `
-                <div style="font-weight: 600;">${userInfo.name || 'Connected'}</div>
+                <div style="font-weight: 600;">${userInfo.name || window.t('connected')}</div>
                 <div style="font-size: 11px; opacity: 0.7;">${userInfo.email || providerLabels[providerId]}</div>
             `;
 
@@ -277,18 +277,18 @@ function updateUIForStatus(providerId, userInfo) {
 
 async function fetchFolders(providerId) {
     try {
-        selectRemote.innerHTML = '<option disabled selected>Loading folders...</option>';
+        selectRemote.innerHTML = `<option disabled selected>${window.t('loading_folders')}</option>`;
         const folders = await invoke('list_remote_folders', { providerId });
 
         if (folders.length === 0) {
-            selectRemote.innerHTML = '<option value="root">Root Directory</option>';
+            selectRemote.innerHTML = `<option value="root">${window.t('root_directory')}</option>`;
         } else {
-            selectRemote.innerHTML = '<option value="root">Root Directory</option>' +
+            selectRemote.innerHTML = `<option value="root">${window.t('root_directory')}</option>` +
                 folders.map(f => `<option value="${f.id}">${f.name}</option>`).join('');
         }
     } catch (err) {
-        showToast('Failed to list folders: ' + err, 'error');
-        selectRemote.innerHTML = '<option disabled selected>Error loading folders</option>';
+        showToast(window.t('failed_connect') + ' ' + err, 'error');
+        selectRemote.innerHTML = `<option disabled selected>${window.t('error_loading_folders')}</option>`;
     }
 }
 
@@ -301,25 +301,29 @@ btnConnect.addEventListener('click', async () => {
 
     try {
         await invoke('connect_provider', { providerId: currentProvider, token });
-        showToast('Account connected successfully!', 'success');
+        showToast(window.t('account_connected_success'), 'success');
         inputToken.value = '';
         await checkAuth(currentProvider);
     } catch (err) {
-        showToast('Failed to connect: ' + err, 'error');
+        showToast(window.t('failed_connect') + ' ' + err, 'error');
     } finally {
         btnConnect.disabled = false;
-        btnConnect.textContent = 'Connect';
+        btnConnect.textContent = window.t('connect');
     }
 });
 
 btnOauth.addEventListener('click', async () => {
     btnOauth.disabled = true;
     const originalContent = btnOauth.innerHTML;
-    btnOauth.textContent = 'Waiting for login...';
+    // Replace text while preserving SVG
+    const svg = btnOauth.querySelector('svg');
+    btnOauth.innerHTML = '';
+    if (svg) btnOauth.appendChild(svg);
+    btnOauth.appendChild(document.createTextNode(' ' + window.t('waiting_login')));
 
     try {
         await invoke('start_oauth', { providerId: currentProvider });
-        showToast('Account connected successfully!', 'success');
+        showToast(window.t('account_connected_success'), 'success');
         await checkAuth(currentProvider);
     } catch (err) {
         showToast(err, 'error');
@@ -330,14 +334,14 @@ btnOauth.addEventListener('click', async () => {
 });
 
 btnDisconnect.addEventListener('click', async () => {
-    if (!confirm('Are you sure you want to disconnect this account?')) return;
+    if (!confirm(window.t('are_you_sure_disconnect'))) return;
 
     try {
         await invoke('disconnect_provider', { providerId: currentProvider });
-        showToast('Account disconnected', 'success');
+        showToast(window.t('account_disconnected'), 'success');
         await checkAuth(currentProvider);
     } catch (err) {
-        showToast('Failed to disconnect: ' + err, 'error');
+        showToast(window.t('failed_disconnect') + ' ' + err, 'error');
     }
 });
 
@@ -347,7 +351,7 @@ async function loadPairs() {
         syncPairs = await invoke('get_sync_pairs');
         render();
     } catch (err) {
-        showToast('Failed to load sync pairs: ' + err, 'error');
+        showToast(window.t('failed_load_pairs') + ' ' + err, 'error');
     }
 }
 
@@ -359,21 +363,23 @@ async function addPair(local, remote, remoteName, provider) {
             remoteName: remoteName,
             providerId: provider,
         });
-        showToast('Folder added to sync list', 'success');
+        showToast(window.t('folder_synced'), 'success');
         await loadPairs();
         closeModal();
     } catch (err) {
-        showToast('Failed to add folder: ' + err, 'error');
+        showToast(window.t('failed_connect') + ' ' + err, 'error');
     }
 }
 
 async function removePair(id) {
+    if (!confirm(window.t('confirm_remove_pair'))) return;
+
     try {
         await invoke('remove_sync_pair', { id });
-        showToast('Folder removed from sync list', 'success');
+        showToast(window.t('pair_removed'), 'success');
         await loadPairs();
     } catch (err) {
-        showToast('Failed to remove folder: ' + err, 'error');
+        showToast(window.t('failed_remove_pair') + ' ' + err, 'error');
     }
 }
 window.removePair = removePair;
@@ -474,7 +480,7 @@ async function loadFileTable() {
 
         fileListBody.innerHTML = files.map(file => renderFileRow(file)).join('');
     } catch (err) {
-        showToast('Failed to list files: ' + err, 'error');
+        showToast(window.t('failed_connect') + ' ' + err, 'error');
     }
 }
 
@@ -507,14 +513,15 @@ function renderFileRow(file) {
 }
 
 async function deleteFile(path) {
-    if (!confirm('Are you sure you want to delete this file? This will also remove it from the cloud.')) return;
+    if (!confirm(window.t('confirm_delete_file'))) return;
 
     try {
+        showToast(window.t('deleting'));
         await invoke('delete_local_file', { path });
-        showToast('File deleted');
+        showToast(window.t('file_deleted'), 'success');
         loadFileTable();
     } catch (err) {
-        showToast('Failed to delete file: ' + err, 'error');
+        showToast(window.t('failed_delete') + ' ' + err, 'error');
     }
 }
 window.deleteFile = deleteFile;
@@ -532,16 +539,16 @@ btnAddFile.addEventListener('click', async () => {
     try {
         const selected = await open({ multiple: false });
         if (selected) {
-            showToast('Adding file...');
+            showToast(window.t('adding_file'));
             const filename = selected.split(/[\\/]/).pop();
             const dest = `${currentPair.local_path}/${filename}`;
 
             await invoke('copy_file', { src: selected, dest });
-            showToast('File added successfully');
+            showToast(window.t('file_added'), 'success');
             loadFileTable();
         }
     } catch (err) {
-        showToast('Failed to add file: ' + err, 'error');
+        showToast(window.t('failed_add_file') + ' ' + err, 'error');
     }
 });
 
