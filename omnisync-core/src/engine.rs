@@ -103,7 +103,12 @@ impl SyncEngine {
                         if pair.status == "active" && path.starts_with(&pair.local_path) {
                             match kind {
                                 notify::EventKind::Remove(_) => {
-                                    let _ = self.delete_remote_file(&path, pair, on_status.clone()).await;
+                                    println!("Watcher: Detected removal of {:?}", path);
+                                    if let Err(e) = self.delete_remote_file(&path, pair, on_status.clone()).await {
+                                        eprintln!("Failed to sync deletion for {:?}: {:?}", path, e);
+                                    } else {
+                                        println!("Successfully synced deletion for {:?}", path);
+                                    }
                                 }
                                 notify::EventKind::Modify(m) => {
                                     // Only sync on data/metadata changes, skip simple access
@@ -391,11 +396,30 @@ impl SyncEngine {
             if remote.name.starts_with('.') || remote.name == "node_modules" || remote.name == "target" || remote.name == "dist" { continue; }
             if !local_entries.contains_key(&remote.name) {
                 let dest = local_dir.join(&remote.name);
-                if remote.is_dir {
-                    tokio::fs::create_dir_all(&dest).await?;
-                    self.sync_directory_recursive(&dest, &remote.id, pair, provider, on_status).await?;
+                
+                // Decide: Was it deleted locally? or is it new in cloud?
+                let mut was_deleted_locally = false;
+                if let (Some(last_sync), Some(r_mtime)) = (pair.last_sync_at, remote.modified_at) {
+                    // If cloud file is older than our last sync, but not here locally, 
+                    // it means we saw it before and the user deleted it.
+                    if r_mtime <= last_sync {
+                        was_deleted_locally = true;
+                    }
+                }
+
+                if was_deleted_locally {
+                    println!("Sync: File {:?} missing locally (was there before), deleting on cloud", remote.name);
+                    if let Err(e) = provider.delete_file(&remote.name, remote_dir_id).await {
+                        eprintln!("Failed to sync local deletion to cloud for {}: {:?}", remote.name, e);
+                    }
                 } else {
-                    let _ = self.sync_remote_to_local(&remote.id, &dest, pair, on_status.clone()).await;
+                    if remote.is_dir {
+                        tokio::fs::create_dir_all(&dest).await?;
+                        self.sync_directory_recursive(&dest, &remote.id, pair, provider, on_status).await?;
+                    } else {
+                        println!("Sync: File {:?} is new on cloud. Downloading.", remote.name);
+                        let _ = self.sync_remote_to_local(&remote.id, &dest, pair, on_status.clone()).await;
+                    }
                 }
             }
         }
@@ -462,6 +486,8 @@ impl SyncEngine {
     }
 
     pub async fn add_sync_pair(&self, local: &str, remote: &str, remote_name: &str, provider: &str) -> Result<i64> {
+        let canonical_local = Path::new(local).canonicalize()?.to_string_lossy().to_string();
+        
         let id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO sync_pairs (local_path, remote_path, remote_name, provider_id)
@@ -469,7 +495,7 @@ impl SyncEngine {
             RETURNING id
             "#
         )
-        .bind(local)
+        .bind(&canonical_local)
         .bind(remote)
         .bind(remote_name)
         .bind(provider)
@@ -477,7 +503,7 @@ impl SyncEngine {
         .await?;
 
         let mut watcher = self.watcher.lock().await;
-        watcher.watch(Path::new(local))?;
+        watcher.watch(Path::new(&canonical_local))?;
 
         Ok(id)
     }
