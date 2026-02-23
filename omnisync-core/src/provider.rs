@@ -26,7 +26,7 @@ pub trait CloudProvider: Send + Sync {
     async fn upload_file(&self, local_path: &Path, cloud_path: &str) -> CloudResult<()>;
 
     /// Download a file from the cloud
-    async fn download_file(&self, cloud_path: &str, local_path: &Path) -> CloudResult<()>;
+    async fn download_file(&self, file_id: &str, local_path: &Path) -> CloudResult<()>;
     
     /// Delete a file on the cloud
     async fn delete_file(&self, filename: &str, cloud_parent: &str) -> CloudResult<()>;
@@ -34,8 +34,17 @@ pub trait CloudProvider: Send + Sync {
     /// Get metadata for a file (hash, size, modified_at)
     async fn get_metadata(&self, cloud_path: &str) -> CloudResult<FileMetadata>;
 
+    /// List files in a specific folder
+    async fn list_files(&self, folder_id: &str) -> CloudResult<Vec<RemoteFile>>;
+
     /// List folders in the cloud
     async fn list_folders(&self) -> CloudResult<Vec<RemoteFolder>>;
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RemoteFile {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

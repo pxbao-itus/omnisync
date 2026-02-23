@@ -23,6 +23,7 @@ pub struct SyncEngine {
 pub enum SyncStatus {
     Idle,
     Syncing { path: String },
+    Downloading { path: String },
     Uploaded { path: String },
     Deleted { path: String },
     Error { path: String, message: String },
@@ -53,47 +54,42 @@ impl SyncEngine {
         let pairs = self.get_sync_pairs().await?;
         let on_status = Arc::new(on_status);
 
-        // 2. Start watching and initial sync
-        {
-            let mut watcher = self.watcher.lock().await;
-            for pair in &pairs {
-                if pair.status == "active" {
-                    let path = Path::new(&pair.local_path);
-                    if path.exists() {
-                        watcher.watch(path).context("Failed to watch path")?;
-                        println!("Watching: {:?}", path);
-                        
-                        // Perform initial scan
-                        let _ = self.perform_initial_sync(pair, on_status.clone()).await;
-                    }
+        // 2. Initial sync for all active pairs
+        for pair in &pairs {
+            if pair.status == "active" {
+                let path = Path::new(&pair.local_path);
+                if path.exists() {
+                    let mut watcher = self.watcher.lock().await;
+                    watcher.watch(path).context("Failed to watch path")?;
+                    println!("Watching: {:?}", path);
+                    drop(watcher);
+                    
+                    let _ = self.perform_initial_sync(pair, on_status.clone()).await;
                 }
             }
         }
 
-        // 3. Start the event loop
+        // 3. Start the event loop with periodic background poll
+        let mut last_poll = Instant::now();
+        
         loop {
-            let event = {
+            // Check for filesystem events
+            while let Some(event_result) = {
                 let watcher_guard = self.watcher.lock().await;
                 watcher_guard.try_recv()
-            };
-
-            if let Some(event_result) = event {
+            } {
                 match event_result {
                     Ok(event) => {
                         println!("Watch event: {:?} for paths {:?}", event.kind, event.paths);
-                        
                         for path in &event.paths {
                             if path.is_dir() && path.exists() { continue; }
                             
-                            // Find the matching sync pair for this path
                             let pairs = self.get_sync_pairs().await.unwrap_or_default();
                             for pair in &pairs {
                                 if path.starts_with(&pair.local_path) {
                                     if path.exists() {
-                                        println!("Detected change/creation (Syncing): {:?}", path);
                                         let _ = self.sync_file(path, pair, on_status.clone()).await;
                                     } else {
-                                        println!("Detected deletion (Removing remote): {:?}", path);
                                         let _ = self.delete_remote_file(path, pair, on_status.clone()).await;
                                     }
                                 }
@@ -101,6 +97,18 @@ impl SyncEngine {
                         }
                     }
                     Err(e) => eprintln!("Watch error: {:?}", e),
+                }
+            }
+
+            // Periodic cloud poll (every 30s)
+            if last_poll.elapsed() > Duration::from_secs(30) {
+                last_poll = Instant::now();
+                println!("Performing periodic cloud poll...");
+                let pairs = self.get_sync_pairs().await.unwrap_or_default();
+                for pair in &pairs {
+                    if pair.status == "active" {
+                        let _ = self.perform_initial_sync(pair, on_status.clone()).await;
+                    }
                 }
             }
 
@@ -162,13 +170,79 @@ impl SyncEngine {
         let local_path = Path::new(&pair.local_path);
         if !local_path.exists() { return Ok(()); }
 
-        println!("Performing initial sync for folder: {:?}", local_path);
+        println!("Performing bidirectional sync for folder: {:?}", local_path);
+
+        // 1. Get local files
+        let mut local_files = HashMap::new();
         let mut entries = tokio::fs::read_dir(local_path).await?;
         while let Some(entry) = entries.next_entry().await? {
-            let entry_path = entry.path();
-            if entry_path.is_file() {
-                let _ = self.sync_file(&entry_path, pair, on_status.clone()).await;
+            if entry.path().is_file() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                local_files.insert(name, entry.path());
             }
+        }
+
+        // 2. Get remote files
+        let token = self.get_credentials(&pair.provider_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+        let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
+            Box::new(crate::providers::gdrive::GoogleDriveProvider::new(token))
+        } else {
+            return Ok(());
+        };
+        let remote_files = provider.list_files(&pair.remote_path).await?;
+
+        // 3. Reconcile
+        // Local to Cloud (Upload if missing in Cloud)
+        for (name, path) in &local_files {
+            if !remote_files.iter().any(|f| &f.name == name) {
+                let _ = self.sync_file(path, pair, on_status.clone()).await;
+            }
+        }
+
+        // Cloud to Local (Download if missing in Local)
+        for remote_file in &remote_files {
+            if !local_files.contains_key(&remote_file.name) {
+                let dest = local_path.join(&remote_file.name);
+                let _ = self.sync_remote_to_local(&remote_file.id, &dest, pair, on_status.clone()).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn sync_remote_to_local<F>(&self, file_id: &str, dest: &Path, pair: &SyncPair, on_status: Arc<F>) -> Result<()>
+    where
+        F: Fn(SyncStatus) + Send + Sync + 'static,
+    {
+        let token = self.get_credentials(&pair.provider_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+        let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
+            Box::new(crate::providers::gdrive::GoogleDriveProvider::new(token))
+        } else {
+            return Ok(());
+        };
+
+        let path_str = dest.to_string_lossy().to_string();
+        on_status(SyncStatus::Downloading { path: path_str.clone() });
+
+        if let Err(e) = provider.download_file(file_id, dest).await {
+            eprintln!("Download error: {:?}", e);
+            on_status(SyncStatus::Error { path: path_str.clone(), message: e.to_string() });
+            return Err(e.into());
+        } else {
+            println!("Successfully downloaded -> {:?}", dest);
+            
+            // Register in sync_cache to avoid immediate re-upload
+            {
+                let mut cache = self.sync_cache.lock().await;
+                cache.insert(dest.to_path_buf(), Instant::now());
+            }
+
+            on_status(SyncStatus::Uploaded { path: path_str.clone() });
+            let on_status_clone = on_status.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                on_status_clone(SyncStatus::Idle);
+            });
         }
         Ok(())
     }

@@ -118,7 +118,25 @@ impl CloudProvider for GoogleDriveProvider {
         Ok(())
     }
 
-    async fn download_file(&self, _cloud_path: &str, _local_path: &Path) -> CloudResult<()> {
+    async fn download_file(&self, file_id: &str, local_path: &Path) -> CloudResult<()> {
+        let response = self.client
+            .get(format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", file_id))
+            .bearer_auth(&self.access_token)
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(CloudError::Unauthenticated);
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(CloudError::ApiError(format!("Download failed: {}", error_text)));
+        }
+
+        let bytes = response.bytes().await?;
+        tokio::fs::write(local_path, bytes).await?;
+        
         Ok(())
     }
 
@@ -145,6 +163,36 @@ impl CloudProvider for GoogleDriveProvider {
         }
 
         Ok(())
+    }
+
+    async fn list_files(&self, folder_id: &str) -> CloudResult<Vec<crate::provider::RemoteFile>> {
+        let q = format!("'{}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false", folder_id);
+        let response = self.client
+            .get("https://www.googleapis.com/drive/v3/files")
+            .query(&[("q", q.as_str()), ("fields", "files(id, name)")])
+            .bearer_auth(&self.access_token)
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(CloudError::Unauthenticated);
+        }
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(CloudError::ApiError(format!("List files failed: {}", error_text)));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+        let files_json = body["files"].as_array().ok_or_else(|| CloudError::ApiError("Invalid body".to_string()))?;
+        
+        let files = files_json.iter().filter_map(|f| {
+            let id = f["id"].as_str()?.to_string();
+            let name = f["name"].as_str()?.to_string();
+            Some(crate::provider::RemoteFile { id, name })
+        }).collect();
+
+        Ok(files)
     }
 
     async fn get_metadata(&self, _cloud_path: &str) -> CloudResult<FileMetadata> {
