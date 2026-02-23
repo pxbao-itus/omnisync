@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 // Shared app state
 struct AppState {
-    engine: Arc<Mutex<SyncEngine>>,
+    engine: Arc<SyncEngine>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -23,8 +23,7 @@ struct SyncPairResponse {
 
 #[tauri::command]
 async fn get_sync_pairs(state: State<'_, AppState>) -> Result<Vec<SyncPairResponse>, String> {
-    let engine = state.engine.lock().await;
-    let pairs = engine
+    let pairs = state.engine
         .get_sync_pairs()
         .await
         .map_err(|e| format!("Failed to get sync pairs: {}", e))?;
@@ -49,8 +48,7 @@ async fn add_sync_pair(
     remote_path: String,
     provider_id: String,
 ) -> Result<i64, String> {
-    let engine = state.engine.lock().await;
-    let id = engine
+    let id = state.engine
         .add_sync_pair(&local_path, &remote_path, &provider_id)
         .await
         .map_err(|e| format!("Failed to add sync pair: {}", e))?;
@@ -59,8 +57,7 @@ async fn add_sync_pair(
 
 #[tauri::command]
 async fn remove_sync_pair(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let engine = state.engine.lock().await;
-    engine
+    state.engine
         .remove_sync_pair(id)
         .await
         .map_err(|e| format!("Failed to remove sync pair: {}", e))?;
@@ -69,8 +66,7 @@ async fn remove_sync_pair(state: State<'_, AppState>, id: i64) -> Result<(), Str
 
 #[tauri::command]
 async fn connect_provider(state: State<'_, AppState>, provider_id: String, token: String) -> Result<(), String> {
-    let engine = state.engine.lock().await;
-    engine
+    state.engine
         .set_credentials(&provider_id, &token)
         .await
         .map_err(|e| format!("Failed to connect provider: {}", e))?;
@@ -79,8 +75,7 @@ async fn connect_provider(state: State<'_, AppState>, provider_id: String, token
 
 #[tauri::command]
 async fn list_remote_folders(state: State<'_, AppState>, provider_id: String) -> Result<Vec<omnisync_core::provider::RemoteFolder>, String> {
-    let engine = state.engine.lock().await;
-    engine
+    state.engine
         .get_remote_folders(&provider_id)
         .await
         .map_err(|e| format!("Failed to list remote folders: {}", e))?
@@ -89,8 +84,7 @@ async fn list_remote_folders(state: State<'_, AppState>, provider_id: String) ->
 
 #[tauri::command]
 async fn get_auth_status(state: State<'_, AppState>, provider_id: String) -> Result<bool, String> {
-    let engine = state.engine.lock().await;
-    let token = engine
+    let token = state.engine
         .get_credentials(&provider_id)
         .await
         .map_err(|e| format!("Failed to get auth status: {}", e))?;
@@ -99,8 +93,7 @@ async fn get_auth_status(state: State<'_, AppState>, provider_id: String) -> Res
 
 #[tauri::command]
 async fn disconnect_provider(state: State<'_, AppState>, provider_id: String) -> Result<(), String> {
-    let engine = state.engine.lock().await;
-    engine
+    state.engine
         .disconnect_provider(&provider_id)
         .await
         .map_err(|e| format!("Failed to disconnect provider: {}", e))?;
@@ -122,17 +115,25 @@ async fn start_oauth(app: tauri::AppHandle, state: State<'_, AppState>, provider
     }
 
     let auth_url = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri=http://localhost:4420&response_type=code&scope=https://www.googleapis.com/auth/drive&access_type=offline&prompt=consent",
+        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri=http://127.0.0.1:4420&response_type=code&scope=https://www.googleapis.com/auth/drive&access_type=offline&prompt=consent",
         client_id
     );
+
+    // Start the auth listener in the background *before* opening the browser
+    let engine = state.engine.clone();
+    let auth_handle = tauri::async_runtime::spawn(async move {
+        engine.authenticate_google(&client_id, &client_secret).await
+    });
+
+    // Short sleep to give the background task time to bind the TcpListener
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Open browser effectively
     app.shell().open(auth_url, None).map_err(|e| e.to_string())?;
 
-    let engine = state.engine.lock().await;
-    engine
-        .authenticate_google(&client_id, &client_secret)
-        .await
+    // Now wait for the background task to finish the auth flow
+    auth_handle.await
+        .map_err(|e| format!("Auth task panicked: {}", e))?
         .map_err(|e| format!("Authentication failed: {}", e))?;
     
     Ok(())
@@ -182,7 +183,7 @@ fn main() {
                 pool
             });
 
-            let engine = Arc::new(Mutex::new(SyncEngine::new(pool)));
+            let engine = Arc::new(SyncEngine::new(pool));
             let engine_clone = engine.clone();
 
             // Manage state immediately so commands can use it
@@ -192,8 +193,7 @@ fn main() {
 
             // Start engine loop in background
             tauri::async_runtime::spawn(async move {
-                let mut engine_locked = engine_clone.lock().await;
-                if let Err(e) = engine_locked.start(move |status| {
+                if let Err(e) = engine_clone.start(move |status| {
                     use tauri::Emitter;
                     let _ = app_handle.emit("sync-status", status);
                 }).await {

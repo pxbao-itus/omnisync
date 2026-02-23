@@ -1,5 +1,5 @@
 use crate::models::SyncPair;
-use crate::provider::CloudProvider;
+use crate::provider::{CloudProvider, CloudError};
 use crate::watcher::FilesystemWatcher;
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 
 pub struct SyncEngine {
     pool: SqlitePool,
-    providers: Vec<Arc<dyn CloudProvider>>,
+    providers: Mutex<Vec<Arc<dyn CloudProvider>>>,
     watcher: Arc<Mutex<FilesystemWatcher>>,
 }
 
@@ -31,16 +31,16 @@ impl SyncEngine {
 
         Self {
             pool,
-            providers: Vec::new(),
+            providers: Mutex::new(Vec::new()),
             watcher: Arc::new(Mutex::new(watcher)),
         }
     }
 
-    pub fn register_provider(&mut self, provider: Arc<dyn CloudProvider>) {
-        self.providers.push(provider);
+    pub async fn register_provider(&self, provider: Arc<dyn CloudProvider>) {
+        self.providers.lock().await.push(provider);
     }
 
-    pub async fn start<F>(&mut self, on_status: F) -> Result<()>
+    pub async fn start<F>(&self, on_status: F) -> Result<()>
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
@@ -115,6 +115,11 @@ impl SyncEngine {
                                             if let Err(e) = provider.upload_file(changed_path, &remote_path).await {
                                                 eprintln!("Upload error: {:?}", e);
                                                 on_status(SyncStatus::Error { path: path_str.clone(), message: e.to_string() });
+                                                
+                                                if matches!(e, CloudError::Unauthenticated) {
+                                                    eprintln!("Authentication failed, disconnecting provider: {}", pair.provider_id);
+                                                    let _ = self.disconnect_provider(&pair.provider_id).await;
+                                                }
                                             } else {
                                                 println!("Uploaded {:?} -> {}", changed_path, remote_path);
                                                 on_status(SyncStatus::Uploaded { path: path_str.clone() });
@@ -236,14 +241,22 @@ impl SyncEngine {
         // Instantiate provider on the fly for this request
         if provider_id == "gdrive" {
             let provider = crate::providers::gdrive::GoogleDriveProvider::new(token);
-            provider.list_folders().await
+            match provider.list_folders().await {
+                Ok(folders) => Ok(folders),
+                Err(CloudError::Unauthenticated) => {
+                    eprintln!("Authentication failed, disconnecting provider: {}", provider_id);
+                    let _ = self.disconnect_provider(provider_id).await;
+                    Err(CloudError::Unauthenticated.into())
+                }
+                Err(e) => Err(e.into()),
+            }
         } else {
             Err(anyhow::anyhow!("Provider not supported yet"))
         }
     }
 
     pub async fn authenticate_google(&self, client_id: &str, client_secret: &str) -> Result<()> {
-        let redirect_uri = "http://localhost:4420";
+        let redirect_uri = "http://127.0.0.1:4420";
         let auth_url = format!(
             "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=https://www.googleapis.com/auth/drive&access_type=offline&prompt=consent",
             client_id, redirect_uri
@@ -253,11 +266,9 @@ impl SyncEngine {
         let listener = TcpListener::bind("127.0.0.1:4420").await?;
         println!("Please visit this URL to authenticate: {}", auth_url);
         
-        // Open browser (handled by Tauri frontend caller usually, but we can print it)
-        // In this implementation, we wait for one connection
         let (mut socket, _) = listener.accept().await?;
         
-        let mut buffer = [0; 1024];
+        let mut buffer = [0; 4096];
         let n = socket.read(&mut buffer).await?;
         let request = String::from_utf8_lossy(&buffer[..n]);
         
@@ -265,7 +276,7 @@ impl SyncEngine {
         let code = request.lines().next()
             .and_then(|line| line.split_whitespace().nth(1))
             .and_then(|path| {
-                let url = url::Url::parse(&format!("http://localhost{}", path)).ok()?;
+                let url = url::Url::parse(&format!("http://127.0.0.1{}", path)).ok()?;
                 url.query_pairs().find(|(k, _)| k == "code").map(|(_, v)| v.into_owned())
             })
             .ok_or_else(|| anyhow::anyhow!("Failed to extract authorization code"))?;
@@ -298,13 +309,14 @@ impl SyncEngine {
         self.set_credentials("gdrive", access_token).await?;
 
         // Send a response to the browser
-        let response_body = "<html><body><h1>Authentication Successful!</h1><p>You can close this window now.</p></body></html>";
+        let response_body = "<html><body style='font-family:sans-serif;text-align:center;padding-top:50px;'><h1>✅ Authentication Successful!</h1><p>OmniSync is now connected. You can close this window now.</p></body></html>";
         let response_http = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n{}",
             response_body.len(),
             response_body
         );
         socket.write_all(response_http.as_bytes()).await?;
+        socket.flush().await?;
 
         Ok(())
     }

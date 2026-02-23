@@ -1,5 +1,5 @@
-use crate::provider::{CloudProvider, FileMetadata};
-use anyhow::{anyhow, Result};
+use crate::provider::{CloudProvider, FileMetadata, CloudError, CloudResult};
+use anyhow::anyhow;
 use async_trait::async_trait;
 use reqwest::Client;
 use std::path::Path;
@@ -26,7 +26,7 @@ impl CloudProvider for GoogleDriveProvider {
         "gdrive"
     }
 
-    async fn upload_file(&self, local_path: &Path, _cloud_path: &str) -> Result<()> {
+    async fn upload_file(&self, local_path: &Path, _cloud_path: &str) -> CloudResult<()> {
         let mut file = File::open(local_path).await?;
         let mut contents = Vec::new();
         file.read_to_end(&mut contents).await?;
@@ -34,19 +34,10 @@ impl CloudProvider for GoogleDriveProvider {
         let filename = local_path
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or_else(|| anyhow!("Invalid filename"))?;
+            .ok_or_else(|| CloudError::Other(anyhow!("Invalid filename")))?;
 
-        // Simple multipart upload (metadata + media) is ideal, but for MVP 
-        // we'll try simple upload or just creating the file.
-        // Google Drive API v3: POST https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart
-        
-        // For this MVP, let's use the 'simple' uploadType if we just want content, 
-        // but typically we need metadata (name, parent).
-        // Let's do a simple multipart request using reqwest.
-        
         let metadata_part = serde_json::json!({
             "name": filename,
-            // "parents": ["root"] // Optional: handle parents later
         })
         .to_string();
 
@@ -61,27 +52,28 @@ impl CloudProvider for GoogleDriveProvider {
             .send()
             .await?;
 
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(CloudError::Unauthenticated);
+        }
+
         if !response.status().is_success() {
             let error_text = response.text().await?;
-            return Err(anyhow!("Upload failed: {}", error_text));
+            return Err(CloudError::ApiError(error_text));
         }
 
         println!("Uploaded {} to Google Drive", filename);
         Ok(())
     }
 
-    async fn download_file(&self, _cloud_path: &str, _local_path: &Path) -> Result<()> {
-        // Implement later
+    async fn download_file(&self, _cloud_path: &str, _local_path: &Path) -> CloudResult<()> {
         Ok(())
     }
 
-    async fn delete_file(&self, _cloud_path: &str) -> Result<()> {
-         // Implement later
+    async fn delete_file(&self, _cloud_path: &str) -> CloudResult<()> {
         Ok(())
     }
 
-    async fn get_metadata(&self, _cloud_path: &str) -> Result<FileMetadata> {
-        // Implement later
+    async fn get_metadata(&self, _cloud_path: &str) -> CloudResult<FileMetadata> {
         Ok(FileMetadata {
             hash: "dummy".to_string(),
             size: 0,
@@ -89,7 +81,7 @@ impl CloudProvider for GoogleDriveProvider {
         })
     }
 
-    async fn list_folders(&self) -> Result<Vec<crate::provider::RemoteFolder>> {
+    async fn list_folders(&self) -> CloudResult<Vec<crate::provider::RemoteFolder>> {
         let response = self.client
             .get("https://www.googleapis.com/drive/v3/files")
             .query(&[
@@ -100,13 +92,17 @@ impl CloudProvider for GoogleDriveProvider {
             .send()
             .await?;
 
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(CloudError::Unauthenticated);
+        }
+
         if !response.status().is_success() {
             let error_text = response.text().await?;
-            return Err(anyhow!("Failed to list folders: {}", error_text));
+            return Err(CloudError::ApiError(error_text));
         }
 
         let body: serde_json::Value = response.json().await?;
-        let files = body["files"].as_array().ok_or_else(|| anyhow!("Invalid response body"))?;
+        let files = body["files"].as_array().ok_or_else(|| CloudError::ApiError("Invalid response body".to_string()))?;
 
         let folders = files.iter().filter_map(|f| {
             let id = f["id"].as_str()?.to_string();
