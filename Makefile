@@ -22,28 +22,28 @@ help:
 
 # Run development mode
 dev:
-	cargo tauri dev
+	set -a; [ -f .env ] && . ./.env; set +a; cargo tauri dev
 
 # Build production bundle for current OS
 build:
-	cargo tauri build
+	set -a; [ -f .env ] && . ./.env; set +a; APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true cargo tauri build --bundles deb
 
 # macOS Universal (Intel + Apple Silicon)
 build-mac:
 	@echo "Building for macOS (Universal)..."
-	cargo tauri build --target universal-apple-darwin
+	set -a; [ -f .env ] && . ./.env; set +a; cargo tauri build --target universal-apple-darwin
 
 # Windows (requires x86_64-pc-windows-msvc target)
 # Note: Usually requires running on Windows or having a cross-toolchain like 'xwin'
 build-win:
 	@echo "Building for Windows..."
-	cargo tauri build --target x86_64-pc-windows-msvc
+	set -a; [ -f .env ] && . ./.env; set +a; cargo tauri build --target x86_64-pc-windows-msvc
 
 # Linux (requires x86_64-unknown-linux-gnu target)
 # Note: Ideally run on Linux or via Docker
 build-linux:
 	@echo "Building for Linux..."
-	cargo tauri build --target x86_64-unknown-linux-gnu
+	set -a; [ -f .env ] && . ./.env; set +a; APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true cargo tauri build --target x86_64-unknown-linux-gnu --bundles deb
 
 # Build for all platforms
 build-all: build-mac build-win build-linux
@@ -76,6 +76,5 @@ install-deps:
 		wget \
 		file \
 		libssl-dev \
-		libgtk-3-dev \
-		libayatanaindicator3-dev
+		libfuse2
 
