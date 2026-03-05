@@ -62,7 +62,8 @@ const translations = {
         confirm_remove_pair: "Are you sure you want to remove this sync pair?",
         removing: "Removing...",
         pair_removed: "Sync pair removed successfully",
-        failed_remove_pair: "Failed to remove sync pair:"
+        failed_remove_pair: "Failed to remove sync pair:",
+        session_expired: "Session expired. Please reconnect your account."
     },
     vi: {
         providers: "Các Dịch Vụ Lưu Trữ Đám Mây",
@@ -127,7 +128,8 @@ const translations = {
         confirm_remove_pair: "Bạn có chắc muốn gỡ bỏ thư mục đồng bộ này không?",
         removing: "Đang gỡ bỏ...",
         pair_removed: "Đã gỡ bỏ thư mục đồng bộ thành công",
-        failed_remove_pair: "Gỡ bỏ thất bại:"
+        failed_remove_pair: "Gỡ bỏ thất bại:",
+        session_expired: "Phiên đã hết hạn. Vui lòng kết nối lại tài khoản."
     }
 };
 

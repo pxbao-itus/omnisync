@@ -59,7 +59,6 @@ setup-targets:
 clean:
 	cargo clean
 	rm -rf target/
-	rm -rf omnisync-gui/dist/
 
 # Install Linux system dependencies
 install-deps:

@@ -31,6 +31,7 @@ pub enum SyncStatus {
     Uploaded { pair_id: i64, path: String },
     Deleted { pair_id: i64, path: String },
     Error { pair_id: i64, path: String, message: String },
+    AuthExpired { provider_id: String },
 }
 
 impl SyncEngine {
@@ -75,6 +76,8 @@ impl SyncEngine {
 
         // 3. Start the event loop with periodic background poll
         let mut last_poll = Instant::now();
+        let mut last_token_refresh = Instant::now();
+        let mut consecutive_refresh_failures: u32 = 0;
         
         loop {
             // Collect events for a short period to group them
@@ -149,6 +152,31 @@ impl SyncEngine {
                         }
                     }
                 }
+            }
+
+            // Periodic token refresh (every 30 min) — keeps Google OAuth session alive
+            if last_token_refresh.elapsed() > Duration::from_secs(30 * 60) {
+                println!("Proactive token refresh check...");
+                match self.get_valid_credentials("gdrive").await {
+                    Ok(Some(_)) => {
+                        println!("Token refreshed successfully (proactive)");
+                        consecutive_refresh_failures = 0;
+                    }
+                    Ok(None) => {
+                        // No credentials stored, nothing to refresh
+                    }
+                    Err(e) => {
+                        consecutive_refresh_failures += 1;
+                        eprintln!("Proactive token refresh failed (attempt {}): {}", consecutive_refresh_failures, e);
+                        if consecutive_refresh_failures >= 3 {
+                            eprintln!("Too many consecutive refresh failures, disconnecting provider");
+                            let _ = self.disconnect_provider("gdrive").await;
+                            on_status(SyncStatus::AuthExpired { provider_id: "gdrive".to_string() });
+                            consecutive_refresh_failures = 0;
+                        }
+                    }
+                }
+                last_token_refresh = Instant::now();
             }
 
             // Periodic cloud poll (every 60s)
@@ -233,7 +261,9 @@ impl SyncEngine {
                 eprintln!("Upload error for {:?}: {:?}", path, e);
                 on_status(SyncStatus::Error { pair_id, path: path_str.clone(), message: e.to_string() });
                 if matches!(e, CloudError::Unauthenticated) {
+                    eprintln!("Token expired during upload, disconnecting provider: {}", pair.provider_id);
                     let _ = self.disconnect_provider(&pair.provider_id).await;
+                    on_status(SyncStatus::AuthExpired { provider_id: pair.provider_id.clone() });
                 }
                 return Err(e.into());
             } else {
@@ -584,12 +614,12 @@ impl SyncEngine {
         if let Some(mut creds) = creds {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
             
-            // If expires within 5 minutes, refresh
+            // If expires within 10 minutes, refresh proactively
             if let Some(expires_at) = creds.expires_at {
-                if expires_at - now < 300 {
+                if expires_at - now < 600 {
                     if provider_id == "gdrive" {
                         if let Some(refresh_token) = &creds.refresh_token {
-                            println!("Refreshing Google token...");
+                            println!("Refreshing Google token (expires in {}s)...", expires_at - now);
                             match self.refresh_google_token(refresh_token).await {
                                 Ok((new_access, new_expires)) => {
                                     // Optionally re-fetch user info if missing
@@ -615,7 +645,15 @@ impl SyncEngine {
                                 }
                                 Err(e) => {
                                     eprintln!("Failed to refresh token: {}", e);
-                                    return Err(e);
+                                    // If the token is still valid (just within the buffer), return it anyway
+                                    if expires_at > now {
+                                        eprintln!("Token still valid for {}s, using current token", expires_at - now);
+                                        return Ok(Some(creds));
+                                    }
+                                    // Token is fully expired and unrefreshable — disconnect to stop retrying
+                                    eprintln!("Token fully expired and refresh failed, disconnecting provider: {}", provider_id);
+                                    let _ = self.disconnect_provider(provider_id).await;
+                                    return Ok(None);
                                 }
                             }
                         }
@@ -818,7 +856,9 @@ impl SyncEngine {
             if let Err(e) = provider.delete_file(filename, &remote_parent_id).await {
                 eprintln!("Delete error: {:?}", e);
                 if matches!(e, CloudError::Unauthenticated) {
+                    eprintln!("Token expired during delete, disconnecting provider: {}", pair.provider_id);
                     let _ = self.disconnect_provider(&pair.provider_id).await;
+                    on_status(SyncStatus::AuthExpired { provider_id: pair.provider_id.clone() });
                 }
                 return Err(e.into());
             } else {

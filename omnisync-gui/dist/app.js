@@ -43,6 +43,14 @@ listen('sync-status', (event) => {
         if (currentPair && currentPair.id === pair_id) {
             loadFileTable();
         }
+    } else if (type === 'AuthExpired') {
+        // Token expired and could not be refreshed — auto-logout
+        const expiredProvider = status.data?.provider_id || 'gdrive';
+        indicator.style.display = 'none';
+        showToast(window.t('session_expired') || `Session expired for ${providerLabels[expiredProvider] || expiredProvider}. Please reconnect.`, 'error');
+        isConnected = false;
+        // Refresh the auth state so the connect button appears
+        checkAuth(expiredProvider);
     } else {
         indicator.style.display = 'flex';
         if (type === 'Syncing' || type === 'Downloading') {
@@ -339,7 +347,10 @@ function updateUIForStatus(providerId, userInfo) {
     }
 }
 
+let _fetchingFolders = false;
 async function fetchFolders(providerId) {
+    if (_fetchingFolders) return; // Prevent re-entrancy loop
+    _fetchingFolders = true;
     try {
         selectRemote.innerHTML = `<option disabled selected>${window.t('loading_folders')}</option>`;
         const folders = await invoke('list_remote_folders', { providerId });
@@ -353,6 +364,10 @@ async function fetchFolders(providerId) {
     } catch (err) {
         showToast(window.t('failed_connect') + ' ' + err, 'error');
         selectRemote.innerHTML = `<option disabled selected>${window.t('error_loading_folders')}</option>`;
+        // Re-check auth — the backend may have disconnected the provider due to expired token
+        await checkAuth(providerId);
+    } finally {
+        _fetchingFolders = false;
     }
 }
 
