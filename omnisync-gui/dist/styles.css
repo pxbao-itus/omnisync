@@ -500,6 +500,7 @@ input {
     border-radius: var(--radius-md);
     transition: all 0.2s ease;
     animation: cardIn 0.3s ease;
+    position: relative;
 }
 
 @keyframes cardIn {

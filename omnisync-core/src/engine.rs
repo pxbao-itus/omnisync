@@ -31,12 +31,24 @@ pub enum SyncStatus {
     Uploaded { pair_id: i64, path: String },
     Deleted { pair_id: i64, path: String },
     Error { pair_id: i64, path: String, message: String },
-    AuthExpired { provider_id: String },
+    AuthExpired { account_id: String },
+}
+
+/// Extract provider type from account_id (e.g., "gdrive:user@gmail.com" -> "gdrive")
+fn provider_type(account_id: &str) -> &str {
+    account_id.split(':').next().unwrap_or(account_id)
+}
+
+/// Build a provider instance from credentials
+fn make_provider(account_id: &str, access_token: String) -> Option<Box<dyn CloudProvider>> {
+    match provider_type(account_id) {
+        "gdrive" => Some(Box::new(crate::providers::gdrive::GoogleDriveProvider::new(access_token))),
+        _ => None,
+    }
 }
 
 impl SyncEngine {
     pub fn new(pool: SqlitePool) -> Self {
-        // Initialize watcher. In a real app, handle error better.
         let watcher = FilesystemWatcher::new().expect("Failed to initialize watcher");
 
         Self {
@@ -77,7 +89,6 @@ impl SyncEngine {
         // 3. Start the event loop with periodic background poll
         let mut last_poll = Instant::now();
         let mut last_token_refresh = Instant::now();
-        let mut consecutive_refresh_failures: u32 = 0;
         
         loop {
             // Collect events for a short period to group them
@@ -114,18 +125,16 @@ impl SyncEngine {
                                     }
                                 }
                                 notify::EventKind::Modify(m) => {
-                                    // Only sync on data/metadata changes, skip simple access
                                     if !matches!(m, notify::event::ModifyKind::Any | notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Metadata(_)) {
                                         continue;
                                     }
                                     if path.exists() {
                                         if path.is_dir() {
-                                            let creds = self.get_valid_credentials(&pair.provider_id).await.unwrap_or(None);
+                                            let creds = self.get_valid_credentials(&pair.account_id).await.unwrap_or(None);
                                             if let Some(creds) = creds {
-                                                let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-                                                    Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
-                                                } else { continue; };
-                                                let _ = self.ensure_remote_path_exists(provider.as_ref(), pair, &path).await;
+                                                if let Some(provider) = make_provider(&pair.account_id, creds.access_token) {
+                                                    let _ = self.ensure_remote_path_exists(provider.as_ref(), pair, &path).await;
+                                                }
                                             }
                                         } else {
                                             let _ = self.sync_file(&path, pair, on_status.clone()).await;
@@ -135,12 +144,11 @@ impl SyncEngine {
                                 notify::EventKind::Create(_) => {
                                     if path.exists() {
                                         if path.is_dir() {
-                                            let creds = self.get_valid_credentials(&pair.provider_id).await.unwrap_or(None);
+                                            let creds = self.get_valid_credentials(&pair.account_id).await.unwrap_or(None);
                                             if let Some(creds) = creds {
-                                                let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-                                                    Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
-                                                } else { continue; };
-                                                let _ = self.ensure_remote_path_exists(provider.as_ref(), pair, &path).await;
+                                                if let Some(provider) = make_provider(&pair.account_id, creds.access_token) {
+                                                    let _ = self.ensure_remote_path_exists(provider.as_ref(), pair, &path).await;
+                                                }
                                             }
                                         } else {
                                             let _ = self.sync_file(&path, pair, on_status.clone()).await;
@@ -154,25 +162,19 @@ impl SyncEngine {
                 }
             }
 
-            // Periodic token refresh (every 30 min) — keeps Google OAuth session alive
+            // Periodic token refresh (every 30 min) — keeps all Google OAuth sessions alive
             if last_token_refresh.elapsed() > Duration::from_secs(30 * 60) {
                 println!("Proactive token refresh check...");
-                match self.get_valid_credentials("gdrive").await {
-                    Ok(Some(_)) => {
-                        println!("Token refreshed successfully (proactive)");
-                        consecutive_refresh_failures = 0;
-                    }
-                    Ok(None) => {
-                        // No credentials stored, nothing to refresh
-                    }
-                    Err(e) => {
-                        consecutive_refresh_failures += 1;
-                        eprintln!("Proactive token refresh failed (attempt {}): {}", consecutive_refresh_failures, e);
-                        if consecutive_refresh_failures >= 3 {
-                            eprintln!("Too many consecutive refresh failures, disconnecting provider");
-                            let _ = self.disconnect_provider("gdrive").await;
-                            on_status(SyncStatus::AuthExpired { provider_id: "gdrive".to_string() });
-                            consecutive_refresh_failures = 0;
+                if let Ok(accounts) = self.get_accounts_for_provider("gdrive").await {
+                    for account in &accounts {
+                        match self.get_valid_credentials(&account.account_id).await {
+                            Ok(Some(_)) => {
+                                println!("Token refreshed successfully for {}", account.account_id);
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                eprintln!("Token refresh failed for {}: {}", account.account_id, e);
+                            }
                         }
                     }
                 }
@@ -198,7 +200,7 @@ impl SyncEngine {
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
-        // 1. Debounce check: Avoid multiple syncs for the same file in short period (5s)
+        // 1. Debounce check
         {
             let mut cache = self.sync_cache.lock().await;
             if let Some(last) = cache.get(path) {
@@ -209,19 +211,17 @@ impl SyncEngine {
             cache.insert(path.to_path_buf(), Instant::now());
         }
 
-        let creds = self.get_valid_credentials(&pair.provider_id).await.unwrap_or(None);
+        let creds = self.get_valid_credentials(&pair.account_id).await.unwrap_or(None);
         if let Some(creds) = creds {
-            let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-                Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
-            } else {
-                return Ok(());
+            let provider = match make_provider(&pair.account_id, creds.access_token) {
+                Some(p) => p,
+                None => return Ok(()),
             };
 
             let filename = path.file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
 
-            // Resolve parent ID for subfolders
             let parent = path.parent().ok_or_else(|| anyhow::anyhow!("No parent"))?;
             let remote_parent_id = match self.ensure_remote_path_exists(provider.as_ref(), pair, parent).await {
                 Ok(id) => id,
@@ -232,7 +232,6 @@ impl SyncEngine {
             };
 
             // Pre-check: Does it actually need syncing?
-            // This prevents UI flicker when Google Drive skips the upload anyway
             let local_meta = tokio::fs::metadata(path).await?;
             let local_size = local_meta.len();
             let local_hash = self.compute_local_hash(path).await?;
@@ -248,7 +247,6 @@ impl SyncEngine {
                 };
 
                 if matches {
-                    // println!("Skip sync_file: {:?} matches cloud.", path);
                     return Ok(());
                 }
             }
@@ -261,16 +259,15 @@ impl SyncEngine {
                 eprintln!("Upload error for {:?}: {:?}", path, e);
                 on_status(SyncStatus::Error { pair_id, path: path_str.clone(), message: e.to_string() });
                 if matches!(e, CloudError::Unauthenticated) {
-                    eprintln!("Token expired during upload, disconnecting provider: {}", pair.provider_id);
-                    let _ = self.disconnect_provider(&pair.provider_id).await;
-                    on_status(SyncStatus::AuthExpired { provider_id: pair.provider_id.clone() });
+                    eprintln!("Token expired during upload, disconnecting account: {}", pair.account_id);
+                    let _ = self.disconnect_account(&pair.account_id).await;
+                    on_status(SyncStatus::AuthExpired { account_id: pair.account_id.clone() });
                 }
                 return Err(e.into());
             } else {
                 println!("Successfully synced {:?} -> folder ID {}", path, pair.remote_path);
                 on_status(SyncStatus::Uploaded { pair_id, path: path_str.clone() });
 
-                // Update cache again after successful sync to prevent buffered events from re-triggering
                 {
                     let mut cache = self.sync_cache.lock().await;
                     cache.insert(path.to_path_buf(), Instant::now());
@@ -293,11 +290,10 @@ impl SyncEngine {
         let local_path = Path::new(&pair.local_path);
         if !local_path.exists() { return Ok(()); }
 
-        let creds = self.get_valid_credentials(&pair.provider_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
-        let provider: Arc<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-            Arc::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
-        } else {
-            return Ok(());
+        let creds = self.get_valid_credentials(&pair.account_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+        let provider: Arc<dyn CloudProvider> = match provider_type(&pair.account_id) {
+            "gdrive" => Arc::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token)),
+            _ => return Ok(()),
         };
 
         self.sync_directory_recursive(local_path, &pair.remote_path, pair, &provider, &on_status).await?;
@@ -348,7 +344,6 @@ impl SyncEngine {
                     }
                 } else {
                     if !remote.is_dir {
-                        // Check if file needs syncing
                         let local_meta = tokio::fs::metadata(path).await?;
                         let local_size = local_meta.len();
                         let local_mtime = local_meta.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
@@ -357,7 +352,6 @@ impl SyncEngine {
                             (Some(_r_size), Some(r_mtime), Some(r_hash)) => {
                                 let local_hash = self.compute_local_hash(path).await?;
                                 if local_hash != *r_hash {
-                                    // Use a 2-second margin for stable sync (avoids jitter)
                                     if local_mtime > r_mtime + 2 {
                                         println!("Sync: Local file {:?} is newer and content differs. Uploading.", path);
                                         let _ = self.sync_file(path, pair, on_status.clone()).await;
@@ -368,7 +362,6 @@ impl SyncEngine {
                                 }
                             }
                             (Some(r_size), Some(r_mtime), None) => {
-                                // Fallback to mtime/size if hash missing
                                 if local_mtime > r_mtime + 2 {
                                     println!("Sync: Local file {:?} is newer (no cloud hash). Uploading.", path);
                                     let _ = self.sync_file(path, pair, on_status.clone()).await;
@@ -427,11 +420,8 @@ impl SyncEngine {
             if !local_entries.contains_key(&remote.name) {
                 let dest = local_dir.join(&remote.name);
                 
-                // Decide: Was it deleted locally? or is it new in cloud?
                 let mut was_deleted_locally = false;
                 if let (Some(last_sync), Some(r_mtime)) = (pair.last_sync_at, remote.modified_at) {
-                    // If cloud file is older than our last sync, but not here locally, 
-                    // it means we saw it before and the user deleted it.
                     if r_mtime <= last_sync {
                         was_deleted_locally = true;
                     }
@@ -469,7 +459,6 @@ impl SyncEngine {
             if let Some(folder) = entries.iter().find(|e| e.name == name && e.is_dir) {
                 current_id = folder.id.clone();
             } else {
-                // Folder missing on remote, create it
                 current_id = provider.create_folder(&name, &current_id).await?;
             }
         }
@@ -481,11 +470,10 @@ impl SyncEngine {
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
-        let creds = self.get_valid_credentials(&pair.provider_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
-        let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-            Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
-        } else {
-            return Ok(());
+        let creds = self.get_valid_credentials(&pair.account_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+        let provider = match make_provider(&pair.account_id, creds.access_token) {
+            Some(p) => p,
+            None => return Ok(()),
         };
 
         let path_str = dest.to_string_lossy().to_string();
@@ -499,7 +487,6 @@ impl SyncEngine {
         } else {
             println!("Successfully downloaded -> {:?}", dest);
             
-            // Register in sync_cache to avoid immediate re-upload
             {
                 let mut cache = self.sync_cache.lock().await;
                 cache.insert(dest.to_path_buf(), Instant::now());
@@ -515,13 +502,15 @@ impl SyncEngine {
         Ok(())
     }
 
-    pub async fn add_sync_pair(&self, local: &str, remote: &str, remote_name: &str, provider: &str) -> Result<i64> {
+    // ---- Data Operations ----
+
+    pub async fn add_sync_pair(&self, local: &str, remote: &str, remote_name: &str, provider: &str, account_id: &str) -> Result<i64> {
         let canonical_local = Path::new(local).canonicalize()?.to_string_lossy().to_string();
         
         let id: i64 = sqlx::query_scalar(
             r#"
-            INSERT INTO sync_pairs (local_path, remote_path, remote_name, provider_id)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sync_pairs (local_path, remote_path, remote_name, provider_id, account_id)
+            VALUES (?, ?, ?, ?, ?)
             RETURNING id
             "#
         )
@@ -529,6 +518,7 @@ impl SyncEngine {
         .bind(remote)
         .bind(remote_name)
         .bind(provider)
+        .bind(account_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -540,7 +530,7 @@ impl SyncEngine {
 
     pub async fn remove_sync_pair(&self, id: i64) -> Result<()> {
         let pair: Option<SyncPair> = sqlx::query_as::<_, SyncPair>(
-            "SELECT id, local_path, remote_path, remote_name, provider_id, status, created_at, last_sync_at FROM sync_pairs WHERE id = ?"
+            "SELECT id, local_path, remote_path, remote_name, provider_id, account_id, status, created_at, last_sync_at FROM sync_pairs WHERE id = ?"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -562,7 +552,7 @@ impl SyncEngine {
     pub async fn get_sync_pairs(&self) -> Result<Vec<SyncPair>> {
         let pairs = sqlx::query_as::<_, SyncPair>(
             r#"
-            SELECT id, local_path, remote_path, remote_name, provider_id, status, created_at, last_sync_at
+            SELECT id, local_path, remote_path, remote_name, provider_id, account_id, status, created_at, last_sync_at
             FROM sync_pairs
             "#
         )
@@ -572,9 +562,12 @@ impl SyncEngine {
         Ok(pairs)
     }
 
+    // ---- Credential Operations (multi-account) ----
+
     pub async fn set_credentials(
         &self, 
-        provider_id: &str, 
+        account_id: &str,
+        provider_id: &str,
         access_token: &str, 
         refresh_token: Option<&str>, 
         expires_in: Option<i64>,
@@ -585,8 +578,9 @@ impl SyncEngine {
         let expires_at = expires_in.map(|secs| (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64) + secs);
         
         sqlx::query(
-            "INSERT OR REPLACE INTO credentials (provider_id, access_token, refresh_token, expires_at, user_name, user_email, user_avatar) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT OR REPLACE INTO credentials (account_id, provider_id, access_token, refresh_token, expires_at, user_name, user_email, user_avatar) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
+        .bind(account_id)
         .bind(provider_id)
         .bind(access_token)
         .bind(refresh_token)
@@ -599,30 +593,30 @@ impl SyncEngine {
         Ok(())
     }
 
-    pub async fn get_credentials(&self, provider_id: &str) -> Result<Option<crate::models::Credentials>> {
+    pub async fn get_credentials(&self, account_id: &str) -> Result<Option<crate::models::Credentials>> {
         let creds: Option<crate::models::Credentials> = sqlx::query_as(
-            "SELECT provider_id, access_token, refresh_token, expires_at, user_name, user_email, user_avatar FROM credentials WHERE provider_id = ?"
+            "SELECT account_id, provider_id, access_token, refresh_token, expires_at, user_name, user_email, user_avatar FROM credentials WHERE account_id = ?"
         )
-        .bind(provider_id)
+        .bind(account_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(creds)
     }
 
-    pub async fn get_valid_credentials(&self, provider_id: &str) -> Result<Option<crate::models::Credentials>> {
-        let creds = self.get_credentials(provider_id).await?;
+    pub async fn get_valid_credentials(&self, account_id: &str) -> Result<Option<crate::models::Credentials>> {
+        let creds = self.get_credentials(account_id).await?;
         if let Some(mut creds) = creds {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
             
             // If expires within 10 minutes, refresh proactively
             if let Some(expires_at) = creds.expires_at {
                 if expires_at - now < 600 {
-                    if provider_id == "gdrive" {
+                    let ptype = provider_type(account_id);
+                    if ptype == "gdrive" {
                         if let Some(refresh_token) = &creds.refresh_token {
-                            println!("Refreshing Google token (expires in {}s)...", expires_at - now);
+                            println!("Refreshing Google token for {} (expires in {}s)...", account_id, expires_at - now);
                             match self.refresh_google_token(refresh_token).await {
                                 Ok((new_access, new_expires)) => {
-                                    // Optionally re-fetch user info if missing
                                     let mut user_name = creds.user_name.clone();
                                     let mut user_email = creds.user_email.clone();
                                     let mut user_avatar = creds.user_avatar.clone();
@@ -635,7 +629,7 @@ impl SyncEngine {
                                         }
                                     }
 
-                                    self.set_credentials("gdrive", &new_access, Some(refresh_token), new_expires, user_name.clone(), user_email.clone(), user_avatar.clone()).await?;
+                                    self.set_credentials(account_id, "gdrive", &new_access, Some(refresh_token), new_expires, user_name.clone(), user_email.clone(), user_avatar.clone()).await?;
                                     creds.access_token = new_access;
                                     creds.expires_at = new_expires.map(|secs| now + secs);
                                     creds.user_name = user_name;
@@ -644,15 +638,14 @@ impl SyncEngine {
                                     return Ok(Some(creds));
                                 }
                                 Err(e) => {
-                                    eprintln!("Failed to refresh token: {}", e);
-                                    // If the token is still valid (just within the buffer), return it anyway
+                                    eprintln!("Failed to refresh token for {}: {}", account_id, e);
                                     if expires_at > now {
                                         eprintln!("Token still valid for {}s, using current token", expires_at - now);
                                         return Ok(Some(creds));
                                     }
-                                    // Token is fully expired and unrefreshable — disconnect to stop retrying
-                                    eprintln!("Token fully expired and refresh failed, disconnecting provider: {}", provider_id);
-                                    let _ = self.disconnect_provider(provider_id).await;
+                                    // Token fully expired — disconnect
+                                    eprintln!("Token fully expired and refresh failed, disconnecting account: {}", account_id);
+                                    let _ = self.disconnect_account(account_id).await;
                                     return Ok(None);
                                 }
                             }
@@ -716,25 +709,49 @@ impl SyncEngine {
         Ok((name, email, avatar))
     }
 
-    pub async fn disconnect_provider(&self, provider_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM credentials WHERE provider_id = ?")
-            .bind(provider_id)
+    // ---- Account Management (multi-account) ----
+
+    pub async fn disconnect_account(&self, account_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM credentials WHERE account_id = ?")
+            .bind(account_id)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
-    pub async fn get_remote_folders(&self, provider_id: &str) -> Result<Vec<crate::provider::RemoteFolder>> {
-        let creds = self.get_valid_credentials(provider_id).await?
-            .ok_or_else(|| anyhow::anyhow!("Provider not connected"))?;
+    /// Get all connected accounts
+    pub async fn get_all_accounts(&self) -> Result<Vec<crate::models::Credentials>> {
+        let accounts = sqlx::query_as::<_, crate::models::Credentials>(
+            "SELECT account_id, provider_id, access_token, refresh_token, expires_at, user_name, user_email, user_avatar FROM credentials ORDER BY account_id"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(accounts)
+    }
 
-        if provider_id == "gdrive" {
+    /// Get all connected accounts for a specific provider
+    pub async fn get_accounts_for_provider(&self, provider_id: &str) -> Result<Vec<crate::models::Credentials>> {
+        let accounts = sqlx::query_as::<_, crate::models::Credentials>(
+            "SELECT account_id, provider_id, access_token, refresh_token, expires_at, user_name, user_email, user_avatar FROM credentials WHERE provider_id = ? ORDER BY account_id"
+        )
+        .bind(provider_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(accounts)
+    }
+
+    pub async fn get_remote_folders(&self, account_id: &str) -> Result<Vec<crate::provider::RemoteFolder>> {
+        let creds = self.get_valid_credentials(account_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Account not connected"))?;
+
+        let ptype = provider_type(account_id);
+        if ptype == "gdrive" {
             let provider = crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token);
             match provider.list_folders().await {
                 Ok(folders) => Ok(folders),
                 Err(CloudError::Unauthenticated) => {
-                    eprintln!("Authentication failed, disconnecting provider: {}", provider_id);
-                    let _ = self.disconnect_provider(provider_id).await;
+                    eprintln!("Authentication failed, disconnecting account: {}", account_id);
+                    let _ = self.disconnect_account(account_id).await;
                     Err(CloudError::Unauthenticated.into())
                 }
                 Err(e) => Err(e.into()),
@@ -757,7 +774,8 @@ impl SyncEngine {
         (verifier, challenge)
     }
 
-    pub async fn authenticate_google(&self, client_id: &str, client_secret: &str, code_verifier: String) -> Result<()> {
+    /// Returns the account_id of the authenticated account (e.g., "gdrive:user@gmail.com")
+    pub async fn authenticate_google(&self, client_id: &str, client_secret: &str, code_verifier: String) -> Result<String> {
         let redirect_uri = "http://127.0.0.1:4420";
         let auth_url = format!(
             "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=https://www.googleapis.com/auth/drive&access_type=offline&prompt=consent",
@@ -807,10 +825,13 @@ impl SyncEngine {
         let refresh_token = tokens["refresh_token"].as_str();
         let expires_in = tokens["expires_in"].as_i64();
         
-        // Fetch user info
+        // Fetch user info to build account_id
         let (user_name, user_email, user_avatar) = self.fetch_google_user_info(access_token).await.unwrap_or((None, None, None));
         
-        self.set_credentials("gdrive", access_token, refresh_token, expires_in, user_name, user_email, user_avatar).await?;
+        let email = user_email.clone().unwrap_or_else(|| "unknown".to_string());
+        let account_id = format!("gdrive:{}", email);
+        
+        self.set_credentials(&account_id, "gdrive", access_token, refresh_token, expires_in, user_name, user_email, user_avatar).await?;
 
         let response_body = "<html><body style='font-family:sans-serif;text-align:center;padding-top:50px;'><h1>✅ Authentication Successful!</h1><p>OmniSync is now connected. You can close this window now.</p></body></html>";
         let response_http = format!(
@@ -821,26 +842,24 @@ impl SyncEngine {
         socket.write_all(response_http.as_bytes()).await?;
         socket.flush().await?;
 
-        Ok(())
+        Ok(account_id)
     }
 
     pub async fn delete_remote_file<F>(&self, path: &Path, pair: &SyncPair, on_status: Arc<F>) -> Result<()>
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
-        let creds = self.get_valid_credentials(&pair.provider_id).await.unwrap_or(None);
+        let creds = self.get_valid_credentials(&pair.account_id).await.unwrap_or(None);
         if let Some(creds) = creds {
-            let provider: Box<dyn CloudProvider> = if pair.provider_id == "gdrive" {
-                Box::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token))
-            } else {
-                return Ok(());
+            let provider = match make_provider(&pair.account_id, creds.access_token) {
+                Some(p) => p,
+                None => return Ok(()),
             };
 
             let filename = path.file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
 
-            // Resolve parent ID for subfolders
             let parent = path.parent().ok_or_else(|| anyhow::anyhow!("No parent"))?;
             let remote_parent_id = match self.ensure_remote_path_exists(provider.as_ref(), pair, parent).await {
                 Ok(id) => id,
@@ -856,9 +875,9 @@ impl SyncEngine {
             if let Err(e) = provider.delete_file(filename, &remote_parent_id).await {
                 eprintln!("Delete error: {:?}", e);
                 if matches!(e, CloudError::Unauthenticated) {
-                    eprintln!("Token expired during delete, disconnecting provider: {}", pair.provider_id);
-                    let _ = self.disconnect_provider(&pair.provider_id).await;
-                    on_status(SyncStatus::AuthExpired { provider_id: pair.provider_id.clone() });
+                    eprintln!("Token expired during delete, disconnecting account: {}", pair.account_id);
+                    let _ = self.disconnect_account(&pair.account_id).await;
+                    on_status(SyncStatus::AuthExpired { account_id: pair.account_id.clone() });
                 }
                 return Err(e.into());
             } else {

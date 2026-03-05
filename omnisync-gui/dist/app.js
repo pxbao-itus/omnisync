@@ -10,10 +10,10 @@ const { listen } = window.__TAURI__.event;
 let syncPairs = [];
 let activeFilter = 'all';
 let currentProvider = 'gdrive';
-let isConnected = false;
 let currentPair = null;
 let currentViewPath = null;
 let pairSyncStatuses = {}; // { pair_id: { type, path, message } }
+let connectedAccounts = []; // [{ account_id, provider_id, name, email, avatar }]
 
 const mainContent = document.getElementById('main-content');
 const detailView = document.getElementById('detail-view');
@@ -25,7 +25,7 @@ const btnAddFile = document.getElementById('btn-add-file');
 listen('sync-status', (event) => {
     const status = event.payload;
     const type = status.type;
-    const { pair_id, path, message } = status.data || {};
+    const { pair_id, path, message, account_id } = status.data || {};
 
     // Store status for specific pair
     if (pair_id) {
@@ -39,18 +39,15 @@ listen('sync-status', (event) => {
 
     if (type === 'Idle') {
         indicator.style.display = 'none';
-        // If we are in detail view for this file, refresh it
         if (currentPair && currentPair.id === pair_id) {
             loadFileTable();
         }
     } else if (type === 'AuthExpired') {
         // Token expired and could not be refreshed — auto-logout
-        const expiredProvider = status.data?.provider_id || 'gdrive';
         indicator.style.display = 'none';
-        showToast(window.t('session_expired') || `Session expired for ${providerLabels[expiredProvider] || expiredProvider}. Please reconnect.`, 'error');
-        isConnected = false;
-        // Refresh the auth state so the connect button appears
-        checkAuth(expiredProvider);
+        showToast(window.t('session_expired') || `Session expired. Please reconnect.`, 'error');
+        // Refresh connected accounts
+        loadAccounts();
     } else {
         indicator.style.display = 'flex';
         if (type === 'Syncing' || type === 'Downloading') {
@@ -63,9 +60,8 @@ listen('sync-status', (event) => {
         }
     }
 
-    // If detail view is open for this pair, we might want to refresh individual rows
+    // If detail view is open for this pair, update row statuses
     if (currentPair && currentPair.id === pair_id) {
-        // Debounced refresh or targeted row update would be better, but let's try row update
         const rows = document.querySelectorAll('#file-list-body tr');
         rows.forEach(row => {
             const rowPath = row.dataset.path;
@@ -122,19 +118,22 @@ const btnCancel = document.getElementById('btn-cancel');
 const btnBrowse = document.getElementById('btn-browse');
 const addForm = document.getElementById('add-form');
 const inputLocal = document.getElementById('input-local');
-const selectRemote = document.getElementById('select-remote');
 const subtitle = document.getElementById('subtitle');
 
 const authSection = document.getElementById('auth-section');
-const authDisconnected = document.getElementById('auth-disconnected');
-const authConnected = document.getElementById('auth-connected');
-const syncConfigSection = document.getElementById('sync-config-section');
+const accountsContainer = document.getElementById('accounts-container');
+const btnAddAccount = document.getElementById('btn-add-account');
+const accountSelectorGroup = document.getElementById('account-selector-group');
+const selectAccount = document.getElementById('select-account');
 const syncFields = document.getElementById('sync-fields');
-const inputToken = document.getElementById('input-token');
-const btnConnect = document.getElementById('btn-connect');
-const btnOauth = document.getElementById('btn-oauth');
-const btnDisconnect = document.getElementById('btn-disconnect');
 const btnAddSubmit = document.getElementById('btn-add-submit');
+
+// Searchable remote folder picker
+const inputRemoteSearch = document.getElementById('input-remote-search');
+const selectRemote = document.getElementById('select-remote'); // hidden input
+const remoteFolderList = document.getElementById('remote-folder-list');
+let _remoteFolders = []; // [{ id, name }]
+let _selectedRemoteName = '';
 
 // ---- Theme Management ----
 function setupTheme() {
@@ -149,7 +148,6 @@ function setupTheme() {
 
         document.documentElement.setAttribute('data-theme', themeToApply);
 
-        // Update UI
         themeBtns.forEach(btn => {
             if (btn.dataset.themeMode === mode) {
                 btn.classList.add('active');
@@ -165,14 +163,12 @@ function setupTheme() {
         btn.addEventListener('click', () => applyTheme(btn.dataset.themeMode));
     });
 
-    // Listen for system theme changes
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
         if (localStorage.getItem('omnisync-theme') === 'system') {
             applyTheme('system');
         }
     });
 
-    // Initial apply
     applyTheme(savedTheme);
 }
 
@@ -230,6 +226,10 @@ function renderCard(pair) {
     const providerLabel = providerLabels[pair.provider_id] || pair.provider_id;
     const localBasename = pair.local_path.split(/[\\/]/).filter(Boolean).pop() || pair.local_path;
 
+    // Find account info
+    const account = connectedAccounts.find(a => a.account_id === pair.account_id);
+    const accountEmail = account ? account.email : pair.account_id;
+
     return `
         <div class="folder-card" data-id="${pair.id}" onclick="openFolderDetail(${pair.id})">
             <div class="folder-icon ${pair.provider_id}">
@@ -247,180 +247,251 @@ function renderCard(pair) {
                         ${pair.remote_name}
                     </span>
                     <span class="meta-item" style="color: var(--provider-${pair.provider_id}, var(--text-tertiary))">
-                        ${providerLabel}
+                        ${accountEmail || providerLabel}
                     </span>
                 </div>
             </div>
-            <div class="folder-status ${statusClass}" id="card-status-${pair.id}">
-                <span class="status-dot"></span>
-                ${statusLabel}
+            <div style="display: flex; align-items: center; gap: 16px;">
+                <div class="folder-status ${statusClass}" id="card-status-${pair.id}">
+                    <span class="status-dot"></span>
+                    ${statusLabel}
+                </div>
+                <div class="card-actions" style="display: flex; gap: 8px;">
+                    <button class="btn-sync-now" onclick="event.stopPropagation(); syncPairNow(${pair.id})" title="${window.t('sync_now')}"
+                        style="width: 32px; height: 32px; background: rgba(0, 210, 255, 0.1); color: var(--accent); border: 1px solid rgba(0, 210, 255, 0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s;">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+                        </svg>
+                    </button>
+                    <button class="btn-remove" onclick="event.stopPropagation(); removePair(${pair.id})" title="Remove"
+                        style="width: 32px; height: 32px; background: rgba(255, 82, 82, 0.1); color: #ff5252; border: 1px solid rgba(255, 82, 82, 0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s;">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
-            <button class="btn-remove" onclick="event.stopPropagation(); removePair(${pair.id})" title="Remove">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                </svg>
-            </button>
         </div>
     `;
 }
 
-// ---- Auth & Provider logic ----
-async function checkAuth(providerId) {
+async function syncPairNow(id) {
     try {
-        const userInfo = await invoke('get_auth_status', { providerId });
-        isConnected = !!userInfo;
-        updateUIForStatus(providerId, userInfo);
-        return isConnected;
+        await invoke('sync_pair_now', { id });
+        showToast(window.t('syncing') || 'Syncing...', 'info');
     } catch (err) {
-        console.error('Failed to check auth:', err);
-        return false;
+        showToast(window.t('failed_sync') || 'Sync failed: ' + err, 'error');
+    }
+}
+window.syncPairNow = syncPairNow;
+
+
+// ---- Multi-Account Logic ----
+async function loadAccounts() {
+    try {
+        connectedAccounts = await invoke('get_all_accounts');
+        renderAccountsList();
+        updateAccountSelector();
+        updateSidebarProfile();
+    } catch (err) {
+        console.error('Failed to load accounts:', err);
     }
 }
 
-function updateUIForStatus(providerId, userInfo) {
-    const connected = !!userInfo;
-    const statusEl = document.getElementById(`status-${providerId}`);
-    const card = document.querySelector(`.provider-card[data-provider="${providerId}"]`);
+function renderAccountsList() {
+    const providerAccounts = connectedAccounts.filter(a => a.provider_id === currentProvider);
 
-    if (statusEl) {
-        statusEl.textContent = connected ? window.t('connected') : window.t('not_connected');
-        if (connected) {
-            card.classList.add('connected');
-        } else {
-            card.classList.remove('connected');
+    if (providerAccounts.length === 0) {
+        accountsContainer.innerHTML = `<p style="font-size: 12px; opacity: 0.5; margin: 0;">${window.t('no_accounts_connected') || 'No accounts connected yet.'}</p>`;
+    } else {
+        accountsContainer.innerHTML = providerAccounts.map(account => `
+            <div class="account-item" style="display: flex; align-items: center; gap: 10px; background: rgba(0, 210, 255, 0.05); border: 1px solid rgba(0, 210, 255, 0.2); border-radius: 8px; padding: 10px 12px;">
+                <div style="width: 32px; height: 32px; border-radius: 50%; overflow: hidden; background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                    ${account.avatar ? `<img src="${account.avatar}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`}
+                </div>
+                <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${account.name || window.t('connected')}</div>
+                    <div style="font-size: 11px; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${account.email || account.account_id}</div>
+                </div>
+                <button type="button" onclick="disconnectAccount('${account.account_id}')" 
+                    style="padding: 4px 10px; background: rgba(255, 82, 82, 0.1); color: #ff5252; border: 1px solid rgba(255, 82, 82, 0.3); border-radius: 6px; font-size: 10px; font-weight: 600; cursor: pointer; flex-shrink: 0;">
+                    ${window.t('disconnect')}
+                </button>
+            </div>
+        `).join('');
+    }
+}
+
+function updateAccountSelector() {
+    const providerAccounts = connectedAccounts.filter(a => a.provider_id === currentProvider);
+
+    if (providerAccounts.length === 0) {
+        accountSelectorGroup.style.display = 'none';
+        syncFields.style.opacity = '0.5';
+        syncFields.style.pointerEvents = 'none';
+        btnAddSubmit.disabled = true;
+    } else {
+        accountSelectorGroup.style.display = 'block';
+
+        selectAccount.innerHTML = `<option value="" disabled selected>${window.t('select_account') || 'Select an account...'}</option>` +
+            providerAccounts.map(a => `<option value="${a.account_id}">${a.email || a.name || a.account_id}</option>`).join('');
+
+        // Auto-select if only one account
+        if (providerAccounts.length === 1) {
+            selectAccount.value = providerAccounts[0].account_id;
+            onAccountSelected(providerAccounts[0].account_id);
         }
     }
+}
 
-    // Update sidebar profile if this is the active filter
+function onAccountSelected(accountId) {
+    syncFields.style.opacity = '1';
+    syncFields.style.pointerEvents = 'all';
+    btnAddSubmit.disabled = false;
+    fetchFolders(accountId);
+}
+
+selectAccount.addEventListener('change', () => {
+    onAccountSelected(selectAccount.value);
+});
+
+function updateSidebarProfile() {
     const sidebarProfile = document.getElementById('user-profile');
-    if (activeFilter === providerId) {
-        if (connected) {
+
+    if (activeFilter !== 'all') {
+        const providerAccounts = connectedAccounts.filter(a => a.provider_id === activeFilter);
+        if (providerAccounts.length > 0) {
             sidebarProfile.style.display = 'flex';
-            sidebarProfile.innerHTML = `
-                <div class="profile-avatar">
-                    ${userInfo.avatar ? `<img src="${userInfo.avatar}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`}
+            sidebarProfile.style.flexDirection = 'column';
+            sidebarProfile.style.gap = '6px';
+            sidebarProfile.innerHTML = providerAccounts.map(a => `
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <div class="profile-avatar" style="width: 24px; height: 24px; border-radius: 50%; overflow: hidden; background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                        ${a.avatar ? `<img src="${a.avatar}" style="width: 100%; height: 100%; object-fit: cover;" />` : `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`}
+                    </div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${a.name || window.t('connected')}</div>
+                        <div style="font-size: 9px; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${a.email || ''}</div>
+                    </div>
                 </div>
-                <div class="profile-info">
-                    <div class="profile-name">${userInfo.name || window.t('connected')}</div>
-                    <div class="profile-email">${userInfo.email || providerLabels[providerId]}</div>
-                </div>
-            `;
+            `).join('');
         } else {
             sidebarProfile.style.display = 'none';
         }
-    } else if (activeFilter === 'all') {
+    } else {
         sidebarProfile.style.display = 'none';
-    }
-
-    if (currentProvider === providerId) {
-        authSection.style.display = 'block';
-        if (connected) {
-            authDisconnected.style.display = 'none';
-            authConnected.style.display = 'block';
-            syncFields.style.opacity = '1';
-            syncFields.style.pointerEvents = 'all';
-            btnAddSubmit.disabled = false;
-
-            // Update user info display
-            const avatarEl = authConnected.querySelector('img') || authConnected.querySelector('svg');
-            const nameEl = document.getElementById('connected-account');
-
-            if (userInfo.avatar) {
-                authConnected.querySelector('div[style*="width: 40px"]').innerHTML = `<img src="${userInfo.avatar}" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;" />`;
-            } else {
-                authConnected.querySelector('div[style*="width: 40px"]').innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
-            }
-
-            nameEl.innerHTML = `
-                <div style="font-weight: 600;">${userInfo.name || window.t('connected')}</div>
-                <div style="font-size: 11px; opacity: 0.7;">${userInfo.email || providerLabels[providerId]}</div>
-            `;
-
-            fetchFolders(providerId);
-        } else {
-            authDisconnected.style.display = 'block';
-            authConnected.style.display = 'none';
-            syncFields.style.opacity = '0.5';
-            syncFields.style.pointerEvents = 'none';
-            btnAddSubmit.disabled = true;
-        }
     }
 }
 
-let _fetchingFolders = false;
-async function fetchFolders(providerId) {
-    if (_fetchingFolders) return; // Prevent re-entrancy loop
-    _fetchingFolders = true;
+async function disconnectAccount(accountId) {
+    if (!confirm(window.t('are_you_sure_disconnect'))) return;
     try {
-        selectRemote.innerHTML = `<option disabled selected>${window.t('loading_folders')}</option>`;
-        const folders = await invoke('list_remote_folders', { providerId });
+        await invoke('disconnect_account', { accountId });
+        showToast(window.t('account_disconnected'), 'success');
+        await loadAccounts();
+    } catch (err) {
+        showToast(window.t('failed_disconnect') + ' ' + err, 'error');
+    }
+}
+window.disconnectAccount = disconnectAccount;
 
-        if (folders.length === 0) {
-            selectRemote.innerHTML = `<option value="root">${window.t('root_directory')}</option>`;
-        } else {
-            selectRemote.innerHTML = `<option value="root">${window.t('root_directory')}</option>` +
-                folders.map(f => `<option value="${f.id}">${f.name}</option>`).join('');
+// ---- Add Account (OAuth) ----
+btnAddAccount.addEventListener('click', async () => {
+    btnAddAccount.disabled = true;
+    const originalContent = btnAddAccount.innerHTML;
+    const svg = btnAddAccount.querySelector('svg');
+    btnAddAccount.innerHTML = '';
+    if (svg) btnAddAccount.appendChild(svg);
+    btnAddAccount.appendChild(document.createTextNode(' ' + (window.t('waiting_login') || 'Waiting for login...')));
+
+    try {
+        const accountId = await invoke('start_oauth', { providerId: currentProvider });
+        showToast(window.t('account_connected_success'), 'success');
+        await loadAccounts();
+    } catch (err) {
+        showToast(err, 'error');
+    } finally {
+        btnAddAccount.disabled = false;
+        btnAddAccount.innerHTML = originalContent;
+    }
+});
+
+// ---- Folder fetching (searchable) ----
+let _fetchingFolders = false;
+async function fetchFolders(accountId) {
+    if (_fetchingFolders) return;
+    _fetchingFolders = true;
+    _remoteFolders = [];
+    _selectedRemoteName = '';
+    selectRemote.value = '';
+    inputRemoteSearch.value = '';
+    remoteFolderList.style.display = 'none';
+
+    try {
+        inputRemoteSearch.placeholder = window.t('loading_folders') || 'Loading folders...';
+        inputRemoteSearch.disabled = true;
+        const folders = await invoke('list_remote_folders', { accountId });
+
+        _remoteFolders = [{ id: 'root', name: window.t('root_directory') || 'Root Directory' }];
+        if (folders.length > 0) {
+            _remoteFolders = _remoteFolders.concat(folders.map(f => ({ id: f.id, name: f.name })));
         }
+        inputRemoteSearch.placeholder = window.t('search_folders') || 'Search folders...';
+        inputRemoteSearch.disabled = false;
+        renderFolderList('');
     } catch (err) {
         showToast(window.t('failed_connect') + ' ' + err, 'error');
-        selectRemote.innerHTML = `<option disabled selected>${window.t('error_loading_folders')}</option>`;
-        // Re-check auth — the backend may have disconnected the provider due to expired token
-        await checkAuth(providerId);
+        inputRemoteSearch.placeholder = window.t('error_loading_folders') || 'Error loading folders';
+        inputRemoteSearch.disabled = true;
+        await loadAccounts();
     } finally {
         _fetchingFolders = false;
     }
 }
 
-btnConnect.addEventListener('click', async () => {
-    const token = inputToken.value.trim();
-    if (!token) return;
+function renderFolderList(query) {
+    const q = query.toLowerCase().trim();
+    const filtered = q ? _remoteFolders.filter(f => f.name.toLowerCase().includes(q)) : _remoteFolders;
 
-    btnConnect.disabled = true;
-    btnConnect.textContent = '...';
+    if (filtered.length === 0) {
+        remoteFolderList.innerHTML = `<div style="padding: 10px 14px; font-size: 12px; opacity: 0.5;">No folders found</div>`;
+    } else {
+        remoteFolderList.innerHTML = filtered.map(f => `
+            <div class="remote-folder-item" data-id="${f.id}" data-name="${f.name}"
+                style="padding: 8px 14px; font-size: 13px; cursor: pointer; border-bottom: 1px solid var(--border-subtle); transition: background 0.15s;"
+                onmouseenter="this.style.background='var(--bg-tertiary)'"
+                onmouseleave="this.style.background='transparent'"
+                onclick="selectFolder('${f.id}', '${f.name.replace(/'/g, "\\'")}')"
+            >${f.name}</div>
+        `).join('');
+    }
+    remoteFolderList.style.display = 'block';
+}
 
-    try {
-        await invoke('connect_provider', { providerId: currentProvider, token });
-        showToast(window.t('account_connected_success'), 'success');
-        inputToken.value = '';
-        await checkAuth(currentProvider);
-    } catch (err) {
-        showToast(window.t('failed_connect') + ' ' + err, 'error');
-    } finally {
-        btnConnect.disabled = false;
-        btnConnect.textContent = window.t('connect');
+function selectFolder(id, name) {
+    selectRemote.value = id;
+    _selectedRemoteName = name;
+    inputRemoteSearch.value = name;
+    remoteFolderList.style.display = 'none';
+}
+window.selectFolder = selectFolder;
+
+inputRemoteSearch.addEventListener('input', () => {
+    selectRemote.value = '';
+    _selectedRemoteName = '';
+    renderFolderList(inputRemoteSearch.value);
+});
+
+inputRemoteSearch.addEventListener('focus', () => {
+    if (_remoteFolders.length > 0) {
+        renderFolderList(inputRemoteSearch.value);
     }
 });
 
-btnOauth.addEventListener('click', async () => {
-    btnOauth.disabled = true;
-    const originalContent = btnOauth.innerHTML;
-    // Replace text while preserving SVG
-    const svg = btnOauth.querySelector('svg');
-    btnOauth.innerHTML = '';
-    if (svg) btnOauth.appendChild(svg);
-    btnOauth.appendChild(document.createTextNode(' ' + window.t('waiting_login')));
-
-    try {
-        await invoke('start_oauth', { providerId: currentProvider });
-        showToast(window.t('account_connected_success'), 'success');
-        await checkAuth(currentProvider);
-    } catch (err) {
-        showToast(err, 'error');
-    } finally {
-        btnOauth.disabled = false;
-        btnOauth.innerHTML = originalContent;
-    }
-});
-
-btnDisconnect.addEventListener('click', async () => {
-    if (!confirm(window.t('are_you_sure_disconnect'))) return;
-
-    try {
-        await invoke('disconnect_provider', { providerId: currentProvider });
-        showToast(window.t('account_disconnected'), 'success');
-        await checkAuth(currentProvider);
-    } catch (err) {
-        showToast(window.t('failed_disconnect') + ' ' + err, 'error');
+// Close folder list when clicking outside
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('#remote-folder-picker')) {
+        remoteFolderList.style.display = 'none';
     }
 });
 
@@ -434,13 +505,14 @@ async function loadPairs() {
     }
 }
 
-async function addPair(local, remote, remoteName, provider) {
+async function addPair(local, remote, remoteName, provider, accountId) {
     try {
         await invoke('add_sync_pair', {
             localPath: local,
             remotePath: remote,
             remoteName: remoteName,
             providerId: provider,
+            accountId: accountId,
         });
         showToast(window.t('folder_synced'), 'success');
         await loadPairs();
@@ -466,7 +538,7 @@ window.removePair = removePair;
 // ---- Modal events ----
 btnAdd.addEventListener('click', () => {
     modalOverlay.classList.add('open');
-    checkAuth(currentProvider);
+    loadAccounts();
 });
 
 btnClose.addEventListener('click', closeModal);
@@ -488,14 +560,14 @@ btnBrowse.addEventListener('click', async () => {
 document.querySelectorAll('.provider-card').forEach(card => {
     card.addEventListener('click', () => {
         const provider = card.dataset.provider;
-        if (provider === 'icloud' || provider === 'onedrive') return; // Not implemented
+        if (provider === 'icloud' || provider === 'onedrive') return;
 
         currentProvider = provider;
         document.querySelectorAll('.provider-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
         card.querySelector('input').checked = true;
 
-        checkAuth(provider);
+        loadAccounts();
     });
 });
 
@@ -505,11 +577,12 @@ addForm.addEventListener('submit', async e => {
 
     const local = inputLocal.value.trim();
     const remote = selectRemote.value;
-    const remoteName = selectRemote.options[selectRemote.selectedIndex].text;
+    const remoteName = _selectedRemoteName || inputRemoteSearch.value || 'Root Directory';
+    const accountId = selectAccount.value;
     const provider = currentProvider;
 
-    if (!local || !remote) return;
-    await addPair(local, remote, remoteName, provider);
+    if (!local || !remote || !accountId) return;
+    await addPair(local, remote, remoteName, provider, accountId);
 });
 
 // ---- Sidebar ----
@@ -519,12 +592,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
         item.classList.add('active');
         activeFilter = item.dataset.provider;
 
-        if (activeFilter !== 'all') {
-            await checkAuth(activeFilter);
-        } else {
-            document.getElementById('user-profile').style.display = 'none';
-        }
-
+        updateSidebarProfile();
         render();
     });
 });
@@ -553,7 +621,6 @@ async function loadFileTable() {
         const files = await invoke('list_local_files', { path: currentViewPath });
         document.getElementById('detail-folder-path').textContent = currentViewPath;
 
-        // Sort: dirs first, then by name
         files.sort((a, b) => {
             if (a.is_dir !== b.is_dir) return b.is_dir ? 1 : -1;
             return a.name.localeCompare(b.name);
@@ -561,7 +628,6 @@ async function loadFileTable() {
 
         fileListBody.innerHTML = files.map(file => renderFileRow(file)).join('');
 
-        // Apply current sync status to rows if any
         if (currentPair && pairSyncStatuses[currentPair.id]) {
             const statusObj = pairSyncStatuses[currentPair.id];
             const rows = document.querySelectorAll('#file-list-body tr');
@@ -677,7 +743,6 @@ window.deleteFile = deleteFile;
 
 btnBack.addEventListener('click', () => {
     if (currentPair && currentViewPath && currentViewPath !== currentPair.local_path) {
-        // Go up one level
         const path = currentViewPath.replace(/\\/g, '/');
         const parts = path.split('/').filter(Boolean);
         parts.pop();
@@ -688,7 +753,7 @@ btnBack.addEventListener('click', () => {
         detailView.style.display = 'none';
         currentPair = null;
         currentViewPath = null;
-        loadPairs(); // Refresh list
+        loadPairs();
     }
 });
 
@@ -732,10 +797,6 @@ function showToast(message, type = 'success') {
 // ---- Init ----
 document.addEventListener('DOMContentLoaded', async () => {
     setupTheme();
+    await loadAccounts();
     await loadPairs();
-
-    // Check auth for whatever is selected by default
-    if (activeFilter !== 'all') {
-        checkAuth(activeFilter);
-    }
 });

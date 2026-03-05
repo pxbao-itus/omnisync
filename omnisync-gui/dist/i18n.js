@@ -63,7 +63,13 @@ const translations = {
         removing: "Removing...",
         pair_removed: "Sync pair removed successfully",
         failed_remove_pair: "Failed to remove sync pair:",
-        session_expired: "Session expired. Please reconnect your account."
+        session_expired: "Session expired. Please reconnect your account.",
+        connected_accounts: "Connected Accounts",
+        add_another_account: "Add Google Account",
+        select_account: "Select Account",
+        no_accounts_connected: "No accounts connected yet.",
+        search_folders: "Search folders...",
+        sync_now: "Sync Now"
     },
     vi: {
         providers: "Các Dịch Vụ Lưu Trữ Đám Mây",
@@ -129,7 +135,13 @@ const translations = {
         removing: "Đang gỡ bỏ...",
         pair_removed: "Đã gỡ bỏ thư mục đồng bộ thành công",
         failed_remove_pair: "Gỡ bỏ thất bại:",
-        session_expired: "Phiên đã hết hạn. Vui lòng kết nối lại tài khoản."
+        session_expired: "Phiên đã hết hạn. Vui lòng kết nối lại tài khoản.",
+        connected_accounts: "Tài Khoản Đã Kết Nối",
+        add_another_account: "Thêm Tài Khoản Google",
+        select_account: "Chọn Tài Khoản",
+        no_accounts_connected: "Chưa có tài khoản nào được kết nối.",
+        search_folders: "Tìm kiếm thư mục...",
+        sync_now: "Đồng bộ ngay"
     }
 };
 

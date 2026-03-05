@@ -57,7 +57,9 @@ async fn copy_file(src: String, dest: String) -> Result<(), String> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct UserInfo {
+struct AccountInfo {
+    account_id: String,
+    provider_id: String,
     name: Option<String>,
     email: Option<String>,
     avatar: Option<String>,
@@ -70,6 +72,7 @@ struct SyncPairResponse {
     remote_path: String,
     remote_name: String,
     provider_id: String,
+    account_id: String,
     status: String,
     created_at: i64,
 }
@@ -89,6 +92,7 @@ async fn get_sync_pairs(state: State<'_, AppState>) -> Result<Vec<SyncPairRespon
             remote_path: p.remote_path,
             remote_name: p.remote_name,
             provider_id: p.provider_id,
+            account_id: p.account_id,
             status: p.status,
             created_at: p.created_at,
         })
@@ -102,9 +106,10 @@ async fn add_sync_pair(
     remote_path: String,
     remote_name: String,
     provider_id: String,
+    account_id: String,
 ) -> Result<i64, String> {
     let id = state.engine
-        .add_sync_pair(&local_path, &remote_path, &remote_name, &provider_id)
+        .add_sync_pair(&local_path, &remote_path, &remote_name, &provider_id, &account_id)
         .await
         .map_err(|e| format!("Failed to add sync pair: {}", e))?;
     Ok(id)
@@ -120,48 +125,82 @@ async fn remove_sync_pair(state: State<'_, AppState>, id: i64) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn connect_provider(state: State<'_, AppState>, provider_id: String, token: String) -> Result<(), String> {
-    state.engine
-        .set_credentials(&provider_id, &token, None, None, None, None, None)
-        .await
-        .map_err(|e| format!("Failed to connect provider: {}", e))?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn list_remote_folders(state: State<'_, AppState>, provider_id: String) -> Result<Vec<omnisync_core::provider::RemoteFolder>, String> {
-    state.engine
-        .get_remote_folders(&provider_id)
-        .await
-        .map_err(|e| format!("Failed to list remote folders: {}", e))?
-        .pipe(Ok)
-}
-
-#[tauri::command]
-async fn get_auth_status(state: State<'_, AppState>, provider_id: String) -> Result<Option<UserInfo>, String> {
-    let creds = state.engine
-        .get_credentials(&provider_id)
-        .await
-        .map_err(|e| format!("Failed to get auth status: {}", e))?;
+async fn sync_pair_now(app: tauri::AppHandle, state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let pairs = state.engine.get_sync_pairs().await.map_err(|e| e.to_string())?;
+    let pair = pairs.into_iter().find(|p| p.id == id)
+        .ok_or_else(|| "Sync pair not found".to_string())?;
     
-    Ok(creds.map(|c| UserInfo {
-        name: c.user_name,
-        email: c.user_email,
-        avatar: c.user_avatar,
-    }))
-}
-
-#[tauri::command]
-async fn disconnect_provider(state: State<'_, AppState>, provider_id: String) -> Result<(), String> {
-    state.engine
-        .disconnect_provider(&provider_id)
-        .await
-        .map_err(|e| format!("Failed to disconnect provider: {}", e))?;
+    let engine = state.engine.clone();
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let on_status = std::sync::Arc::new(move |status: omnisync_core::engine::SyncStatus| {
+            use tauri::Emitter;
+            let _ = app_handle.emit("sync-status", status);
+        });
+        if let Err(e) = engine.perform_initial_sync(&pair, on_status).await {
+            eprintln!("Manual sync failed for pair {}: {:?}", id, e);
+        }
+    });
     Ok(())
 }
 
 #[tauri::command]
-async fn start_oauth(app: tauri::AppHandle, state: State<'_, AppState>, provider_id: String) -> Result<(), String> {
+async fn list_remote_folders(state: State<'_, AppState>, account_id: String) -> Result<Vec<omnisync_core::provider::RemoteFolder>, String> {
+    state.engine
+        .get_remote_folders(&account_id)
+        .await
+        .map_err(|e| format!("Failed to list remote folders: {}", e))
+}
+
+#[tauri::command]
+async fn get_all_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>, String> {
+    let accounts = state.engine
+        .get_all_accounts()
+        .await
+        .map_err(|e| format!("Failed to get accounts: {}", e))?;
+
+    Ok(accounts
+        .into_iter()
+        .map(|c| AccountInfo {
+            account_id: c.account_id,
+            provider_id: c.provider_id,
+            name: c.user_name,
+            email: c.user_email,
+            avatar: c.user_avatar,
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn get_accounts_for_provider(state: State<'_, AppState>, provider_id: String) -> Result<Vec<AccountInfo>, String> {
+    let accounts = state.engine
+        .get_accounts_for_provider(&provider_id)
+        .await
+        .map_err(|e| format!("Failed to get accounts: {}", e))?;
+
+    Ok(accounts
+        .into_iter()
+        .map(|c| AccountInfo {
+            account_id: c.account_id,
+            provider_id: c.provider_id,
+            name: c.user_name,
+            email: c.user_email,
+            avatar: c.user_avatar,
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn disconnect_account(state: State<'_, AppState>, account_id: String) -> Result<(), String> {
+    state.engine
+        .disconnect_account(&account_id)
+        .await
+        .map_err(|e| format!("Failed to disconnect account: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_oauth(app: tauri::AppHandle, state: State<'_, AppState>, provider_id: String) -> Result<String, String> {
     if provider_id != "gdrive" {
         return Err("Provider not supported".to_string());
     }
@@ -189,26 +228,16 @@ async fn start_oauth(app: tauri::AppHandle, state: State<'_, AppState>, provider
     // Short sleep to give the background task time to bind the TcpListener
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    // Open browser effectively
+    // Open browser
     use tauri_plugin_opener::OpenerExt;
     app.opener().open_url(auth_url, None::<String>).map_err(|e| e.to_string())?;
 
-    // Now wait for the background task to finish the auth flow
-    auth_handle.await
+    // Wait for the background task to finish the auth flow
+    let account_id = auth_handle.await
         .map_err(|e| format!("Auth task panicked: {}", e))?
         .map_err(|e| format!("Authentication failed: {}", e))?;
     
-    Ok(())
-}
-
-trait Pipe {
-    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T where Self: Sized;
-}
-
-impl<T> Pipe for T {
-    fn pipe<U>(self, f: impl FnOnce(Self) -> U) -> U {
-        f(self)
-    }
+    Ok(account_id)
 }
 
 fn main() {
@@ -219,7 +248,6 @@ fn main() {
         .setup(|app| {
             let app_handle = app.handle().clone();
             
-            // Initialize database and pool synchronously during setup
             let pool = tauri::async_runtime::block_on(async {
                 let db_path = app_handle
                     .path()
@@ -249,12 +277,10 @@ fn main() {
             let engine = Arc::new(SyncEngine::new(pool));
             let engine_clone = engine.clone();
 
-            // Manage state immediately so commands can use it
             app.manage(AppState {
                 engine,
             });
 
-            // Start engine loop in background
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = engine_clone.start(move |status| {
                     use tauri::Emitter;
@@ -270,14 +296,15 @@ fn main() {
             get_sync_pairs,
             add_sync_pair,
             remove_sync_pair,
-            connect_provider,
             list_remote_folders,
-            get_auth_status,
+            get_all_accounts,
+            get_accounts_for_provider,
+            disconnect_account,
             start_oauth,
-            disconnect_provider,
             list_local_files,
             delete_local_file,
-            copy_file
+            copy_file,
+            sync_pair_now
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

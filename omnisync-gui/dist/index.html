@@ -268,63 +268,33 @@
                     </div>
                 </div>
 
-                <!-- Credentials Section (Moved here) -->
+                <!-- Multi-Account Section -->
                 <div id="auth-section">
-                    <!-- Not Connected State -->
-                    <div id="auth-disconnected">
-                        <div class="form-group">
-                            <label class="form-label" data-i18n="connect_account">Connect Account</label>
-                            <p class="form-help" data-i18n="connect_desc">Securely connect your Google account to start
-                                syncing.</p>
-                            <button type="button" class="btn-submit" id="btn-oauth"
-                                style="margin-top: 10px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 12px;"
-                                data-i18n="login_google">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                                    <path d="M12 2L2 19.5h7.5L12 14l2.5 5.5H22L12 2z" fill="#4285F4" />
-                                    <path d="M2 19.5l3.5-6L12 14l-2.5 5.5H2z" fill="#FBBC04" />
-                                    <path d="M9.5 19.5H22l-3.5-6H5.5l3.5 6h.5z" fill="#34A853" />
-                                </svg>
-                                Log in with Google
-                            </button>
-
-                            <div style="margin: 20px 0; display: flex; align-items: center; gap: 10px; opacity: 0.3;">
-                                <div style="flex: 1; height: 1px; background: white;"></div>
-                                <span style="font-size: 10px; text-transform: uppercase;" data-i18n="or">or</span>
-                                <div style="flex: 1; height: 1px; background: white;"></div>
-                            </div>
-
-                            <label class="form-label" style="font-size: 10px; opacity: 0.6;"
-                                data-i18n="manual_token">Manual Access Token</label>
-                            <div class="input-row">
-                                <input type="password" class="form-input" id="input-token" data-i18n="paste_token"
-                                    placeholder="Paste token..." />
-                                <button type="button" class="btn-browse" id="btn-connect" style="font-size: 11px;"
-                                    data-i18n="connect">Connect</button>
-                            </div>
+                    <!-- Connected Accounts List -->
+                    <div id="accounts-list" class="form-group">
+                        <label class="form-label" data-i18n="connected_accounts">Connected Accounts</label>
+                        <div id="accounts-container"
+                            style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;">
+                            <!-- Dynamically populated -->
                         </div>
+                        <button type="button" class="btn-submit" id="btn-add-account"
+                            style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 10px; font-size: 12px;"
+                            data-i18n="add_another_account">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2.5" stroke-linecap="round">
+                                <line x1="12" y1="5" x2="12" y2="19" />
+                                <line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                            Add Google Account
+                        </button>
                     </div>
 
-                    <!-- Connected State -->
-                    <div id="auth-connected"
-                        style="display: none; background: rgba(0, 210, 255, 0.05); border: 1px solid rgba(0, 210, 255, 0.2); border-radius: var(--radius-md); padding: 16px; margin-bottom: 20px;">
-                        <div style="display: flex; align-items: center; gap: 12px;">
-                            <div
-                                style="width: 40px; height: 40px; background: white; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
-                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                                    <path d="M12 2L2 19.5h7.5L12 14l2.5 5.5H22L12 2z" fill="#4285F4" />
-                                    <path d="M2 19.5l3.5-6L12 14l-2.5 5.5H2z" fill="#FBBC04" />
-                                    <path d="M9.5 19.5H22l-3.5-6H5.5l3.5 6h.5z" fill="#34A853" />
-                                </svg>
-                            </div>
-                            <div style="flex: 1;">
-                                <div style="font-size: 14px; font-weight: 600; color: #fff;"
-                                    data-i18n="account_connected">Account Connected</div>
-                                <div style="font-size: 12px; color: rgba(255, 255, 255, 0.6);" id="connected-account">
-                                    Google Drive</div>
-                            </div>
-                            <button type="button" id="btn-disconnect" data-i18n="disconnect"
-                                style="padding: 6px 12px; background: rgba(255, 82, 82, 0.1); color: #ff5252; border: 1px solid rgba(255, 82, 82, 0.3); border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer;">Disconnect</button>
-                        </div>
+                    <!-- Account Selector for Sync Pair -->
+                    <div id="account-selector-group" class="form-group" style="display: none;">
+                        <label class="form-label" data-i18n="select_account">Select Account</label>
+                        <select class="form-input" id="select-account" required>
+                            <option value="" disabled selected data-i18n="select_account">Select an account...</option>
+                        </select>
                     </div>
                 </div>
 
@@ -339,9 +309,15 @@
                     </div>
                     <div class="form-group">
                         <label class="form-label" data-i18n="remote_folder">Remote Folder (on Google Drive)</label>
-                        <select class="form-input" id="select-remote" required>
-                            <option value="" disabled selected>Select a folder...</option>
-                        </select>
+                        <div id="remote-folder-picker" style="position: relative;">
+                            <input type="text" class="form-input" id="input-remote-search"
+                                placeholder="Search folders..." autocomplete="off" />
+                            <input type="hidden" id="select-remote" required />
+                            <div id="remote-folder-list"
+                                style="display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 200px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-top: none; border-radius: 0 0 8px 8px; z-index: 10;">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
                     </div>
                 </div>
 

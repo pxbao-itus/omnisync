@@ -8,6 +8,7 @@ pub struct SyncPair {
     pub remote_path: String,
     pub remote_name: String,
     pub provider_id: String,
+    pub account_id: String,
     pub status: String,
     pub created_at: i64,
     pub last_sync_at: Option<i64>,
@@ -15,6 +16,7 @@ pub struct SyncPair {
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Credentials {
+    pub account_id: String,
     pub provider_id: String,
     pub access_token: String,
     pub refresh_token: Option<String>,

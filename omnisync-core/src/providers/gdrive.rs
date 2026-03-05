@@ -89,6 +89,14 @@ impl CloudProvider for GoogleDriveProvider {
         let local_meta = tokio::fs::metadata(local_path).await?;
         let local_size = local_meta.len();
         
+        // Get file timestamps for preserving dates
+        let modified_time = local_meta.modified().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0).unwrap_or_default().to_rfc3339());
+        let created_time = local_meta.created().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0).unwrap_or_default().to_rfc3339());
+        
         // Compute hash for more reliable comparison
         let local_hash = self.compute_local_hash(local_path).await?;
 
@@ -105,15 +113,24 @@ impl CloudProvider for GoogleDriveProvider {
             };
 
             if matches {
-                // println!("File {} content matches cloud, skipping upload", filename);
                 return Ok(());
             }
 
-            // Update existing file: PATCH https://www.googleapis.com/upload/drive/v3/files/{fileId}?uploadType=media
+            // Update existing file with metadata (to preserve modifiedTime)
+            let mut metadata = serde_json::json!({});
+            if let Some(ref mtime) = modified_time {
+                metadata["modifiedTime"] = serde_json::json!(mtime);
+            }
+
+            let metadata_part = metadata.to_string();
+            let form = reqwest::multipart::Form::new()
+                .part("metadata", reqwest::multipart::Part::text(metadata_part).mime_str("application/json")?)
+                .part("file", reqwest::multipart::Part::bytes(contents).mime_str("application/octet-stream")?);
+
             let response = self.client
-                .patch(format!("https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media", file_id))
+                .patch(format!("https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=multipart", file_id))
                 .bearer_auth(&self.access_token)
-                .body(contents)
+                .multipart(form)
                 .send()
                 .await?;
 
@@ -134,6 +151,12 @@ impl CloudProvider for GoogleDriveProvider {
 
             if _cloud_path != "root" && !_cloud_path.is_empty() {
                 metadata["parents"] = serde_json::json!([_cloud_path]);
+            }
+            if let Some(ref ctime) = created_time {
+                metadata["createdTime"] = serde_json::json!(ctime);
+            }
+            if let Some(ref mtime) = modified_time {
+                metadata["modifiedTime"] = serde_json::json!(mtime);
             }
 
             let metadata_part = metadata.to_string();
