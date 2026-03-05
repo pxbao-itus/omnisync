@@ -14,12 +14,16 @@ use rand::{Rng, thread_rng};
 use sha2::{Sha256, Digest};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use async_recursion::async_recursion;
+use futures::future::BoxFuture;
+use futures::stream::StreamExt;
 
+#[derive(Clone)]
 pub struct SyncEngine {
     pool: SqlitePool,
-    providers: Mutex<Vec<Arc<dyn CloudProvider>>>,
+    providers: Arc<Mutex<Vec<Arc<dyn CloudProvider>>>>,
     watcher: Arc<Mutex<FilesystemWatcher>>,
-    sync_cache: Mutex<HashMap<PathBuf, Instant>>,
+    sync_cache: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+    cancel_tokens: Arc<Mutex<HashMap<i64, Arc<std::sync::atomic::AtomicBool>>>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -53,9 +57,10 @@ impl SyncEngine {
 
         Self {
             pool,
-            providers: Mutex::new(Vec::new()),
+            providers: Arc::new(Mutex::new(Vec::new())),
             watcher: Arc::new(Mutex::new(watcher)),
-            sync_cache: Mutex::new(HashMap::new()),
+            sync_cache: Arc::new(Mutex::new(HashMap::new())),
+            cancel_tokens: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -115,10 +120,19 @@ impl SyncEngine {
 
                     for pair in &pairs {
                         if pair.status == "active" && path.starts_with(&pair.local_path) {
+                            let cancel = {
+                                let tokens = self.cancel_tokens.lock().await;
+                                tokens.get(&pair.id).cloned()
+                            };
+                            
+                            if let Some(c) = &cancel {
+                                if c.load(std::sync::atomic::Ordering::Relaxed) { continue; }
+                            }
+
                             match kind {
                                 notify::EventKind::Remove(_) => {
                                     println!("Watcher: Detected removal of {:?}", path);
-                                    if let Err(e) = self.delete_remote_file(&path, pair, on_status.clone()).await {
+                                    if let Err(e) = self.delete_remote_file(&path, pair, on_status.clone(), cancel).await {
                                         eprintln!("Failed to sync deletion for {:?}: {:?}", path, e);
                                     } else {
                                         println!("Successfully synced deletion for {:?}", path);
@@ -137,7 +151,7 @@ impl SyncEngine {
                                                 }
                                             }
                                         } else {
-                                            let _ = self.sync_file(&path, pair, on_status.clone()).await;
+                                            let _ = self.sync_file(&path, pair, on_status.clone(), cancel).await;
                                         }
                                     }
                                 }
@@ -151,7 +165,7 @@ impl SyncEngine {
                                                 }
                                             }
                                         } else {
-                                            let _ = self.sync_file(&path, pair, on_status.clone()).await;
+                                            let _ = self.sync_file(&path, pair, on_status.clone(), cancel).await;
                                         }
                                     }
                                 }
@@ -186,7 +200,13 @@ impl SyncEngine {
                 let pairs = self.get_sync_pairs().await.unwrap_or_default();
                 for pair in &pairs {
                     if pair.status == "active" {
-                        let _ = self.perform_initial_sync(pair, on_status.clone()).await;
+                        // Spawn background sync to avoid blocking the event loop
+                        let engine = self.clone();
+                        let pair_c = pair.clone();
+                        let on_status_c = on_status.clone();
+                        tokio::spawn(async move {
+                            let _ = engine.perform_initial_sync(&pair_c, on_status_c).await;
+                        });
                     }
                 }
                 last_poll = Instant::now();
@@ -196,10 +216,13 @@ impl SyncEngine {
         }
     }
 
-    pub async fn sync_file<F>(&self, path: &Path, pair: &SyncPair, on_status: Arc<F>) -> Result<()>
+    pub async fn sync_file<F>(&self, path: &Path, pair: &SyncPair, on_status: Arc<F>, cancel: Option<Arc<std::sync::atomic::AtomicBool>>) -> Result<()>
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
+        if let Some(c) = &cancel {
+            if c.load(std::sync::atomic::Ordering::Relaxed) { return Ok(()); }
+        }
         // 1. Debounce check
         {
             let mut cache = self.sync_cache.lock().await;
@@ -290,13 +313,25 @@ impl SyncEngine {
         let local_path = Path::new(&pair.local_path);
         if !local_path.exists() { return Ok(()); }
 
+        let token = {
+            let mut tokens = self.cancel_tokens.lock().await;
+            if let Some(old) = tokens.remove(&pair.id) {
+                old.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            let t = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            tokens.insert(pair.id, t.clone());
+            t
+        };
+
+        let _token_c = token.clone();
+
         let creds = self.get_valid_credentials(&pair.account_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
         let provider: Arc<dyn CloudProvider> = match provider_type(&pair.account_id) {
             "gdrive" => Arc::new(crate::providers::gdrive::GoogleDriveProvider::new(creds.access_token)),
             _ => return Ok(()),
         };
 
-        self.sync_directory_recursive(local_path, &pair.remote_path, pair, &provider, &on_status).await?;
+        self.sync_directory_recursive(local_path, &pair.remote_path, pair, &provider, &on_status, token).await?;
 
         // Update last sync time
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
@@ -316,11 +351,16 @@ impl SyncEngine {
         remote_dir_id: &str,
         pair: &SyncPair,
         provider: &Arc<dyn CloudProvider>,
-        on_status: &Arc<F>
+        on_status: &Arc<F>,
+        cancel: Arc<std::sync::atomic::AtomicBool>
     ) -> Result<()>
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+             return Ok(());
+        }
+
 
         // 1. Get local files & dirs
         let mut local_entries = HashMap::new();
@@ -333,6 +373,8 @@ impl SyncEngine {
         // 2. Get remote files & dirs
         let remote_entries = provider.list_files(remote_dir_id).await?;
 
+        let mut tasks: Vec<BoxFuture<'_, Result<()>>> = Vec::new();
+
         // 3. Reconcile: Local to Cloud
         for (name, path) in &local_entries {
             if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" { continue; }
@@ -340,77 +382,103 @@ impl SyncEngine {
             if let Some(remote) = remote_entries.iter().find(|r| &r.name == name) {
                 if path.is_dir() {
                     if remote.is_dir {
-                        self.sync_directory_recursive(path, &remote.id, pair, provider, on_status).await?;
+                        let path = path.clone();
+                        let remote_id = remote.id.clone();
+                        let cancel_c = cancel.clone();
+                        tasks.push(Box::pin(async move {
+                            if cancel_c.load(std::sync::atomic::Ordering::Relaxed) { return Ok(()); }
+                            self.sync_directory_recursive(&path, &remote_id, pair, provider, on_status, cancel_c).await
+                        }));
                     }
                 } else {
                     if !remote.is_dir {
-                        let local_meta = tokio::fs::metadata(path).await?;
-                        let local_size = local_meta.len();
-                        let local_mtime = local_meta.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                        let path = path.clone();
+                        let remote_id = remote.id.clone();
+                        let remote_size = remote.size;
+                        let remote_mtime = remote.modified_at;
+                        let remote_hash = remote.hash.clone();
+                        let cancel_c = cancel.clone();
+                        let on_status_c = on_status.clone();
+                        tasks.push(Box::pin(async move {
+                            if cancel_c.load(std::sync::atomic::Ordering::Relaxed) { return Ok(()); }
+                            let local_meta = tokio::fs::metadata(&path).await?;
+                            let local_size = local_meta.len();
+                            let local_mtime = local_meta.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
 
-                        match (remote.size, remote.modified_at, &remote.hash) {
-                            (Some(_r_size), Some(r_mtime), Some(r_hash)) => {
-                                let local_hash = self.compute_local_hash(path).await?;
-                                if local_hash != *r_hash {
-                                    if local_mtime > r_mtime + 2 {
-                                        println!("Sync: Local file {:?} is newer and content differs. Uploading.", path);
-                                        let _ = self.sync_file(path, pair, on_status.clone()).await;
-                                    } else if r_mtime > local_mtime + 2 {
-                                        println!("Sync: Cloud file {:?} is newer and content differs. Downloading.", path);
-                                        let _ = self.sync_remote_to_local(&remote.id, path, pair, on_status.clone()).await;
+                            match (remote_size, remote_mtime, remote_hash) {
+                                (Some(_r_size), Some(r_mtime), Some(r_hash)) => {
+                                    let local_hash = self.compute_local_hash(&path).await?;
+                                    if local_hash != r_hash {
+                                        if local_mtime > r_mtime + 2 {
+                                            println!("Sync: Local file {:?} is newer and content differs. Uploading.", path);
+                                            let _ = self.sync_file(&path, pair, on_status_c, Some(cancel_c)).await;
+                                        } else if r_mtime > local_mtime + 2 {
+                                            println!("Sync: Cloud file {:?} is newer and content differs. Downloading.", path);
+                                            let _ = self.sync_remote_to_local(&remote_id, &path, pair, on_status_c, Some(cancel_c)).await;
+                                        }
                                     }
                                 }
-                            }
-                            (Some(r_size), Some(r_mtime), None) => {
-                                if local_mtime > r_mtime + 2 {
-                                    println!("Sync: Local file {:?} is newer (no cloud hash). Uploading.", path);
-                                    let _ = self.sync_file(path, pair, on_status.clone()).await;
-                                } else if r_mtime > local_mtime + 2 || local_size != r_size {
-                                    println!("Sync: Cloud file {:?} is newer or size differs (no cloud hash). Downloading.", path);
-                                    let _ = self.sync_remote_to_local(&remote.id, path, pair, on_status.clone()).await;
+                                (Some(r_size), Some(r_mtime), None) => {
+                                    if local_mtime > r_mtime + 2 {
+                                        println!("Sync: Local file {:?} is newer (no cloud hash). Uploading.", path);
+                                        let _ = self.sync_file(&path, pair, on_status_c, Some(cancel_c)).await;
+                                    } else if r_mtime > local_mtime + 2 || local_size != r_size {
+                                        println!("Sync: Cloud file {:?} is newer or size differs (no cloud hash). Downloading.", path);
+                                        let _ = self.sync_remote_to_local(&remote_id, &path, pair, on_status_c, Some(cancel_c)).await;
+                                    }
                                 }
-                            }
-                            _ => {
-                                println!("Sync: Missing metadata for {:?}, checking via sync_file.", path);
-                                let _ = self.sync_file(path, pair, on_status.clone()).await;
-                            }
-                        };
+                                _ => {
+                                    println!("Sync: Missing metadata for {:?}, checking via sync_file.", path);
+                                    let _ = self.sync_file(&path, pair, on_status_c, Some(cancel_c)).await;
+                                }
+                            };
+                            Ok(())
+                        }));
                     }
                 }
             } else {
                 // Missing in cloud
-                let local_meta = tokio::fs::metadata(path).await?;
-                let local_mtime = local_meta.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
-                
-                let mut was_there_before = false;
-                if let Some(last_sync) = pair.last_sync_at {
-                    if local_mtime < last_sync {
-                        was_there_before = true;
+                let path = path.clone();
+                let name = name.clone();
+                let remote_dir_id = remote_dir_id.to_string();
+                let on_status_c = on_status.clone();
+                let cancel_c = cancel.clone();
+                tasks.push(Box::pin(async move {
+                    if cancel_c.load(std::sync::atomic::Ordering::Relaxed) { return Ok(()); }
+                    let local_meta = tokio::fs::metadata(&path).await?;
+                    let local_mtime = local_meta.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                    
+                    let mut was_there_before = false;
+                    if let Some(last_sync) = pair.last_sync_at {
+                        if local_mtime < last_sync {
+                            was_there_before = true;
+                        }
                     }
-                }
 
-                if path.is_dir() {
-                    if was_there_before {
-                        println!("Directory {:?} missing on cloud (was there before), deleting locally", path);
-                        let _ = tokio::fs::remove_dir_all(path).await;
-                    } else {
-                        let new_folder_id = provider.create_folder(name, remote_dir_id).await?;
-                        self.sync_directory_recursive(path, &new_folder_id, pair, provider, on_status).await?;
-                    }
-                } else {
-                    if was_there_before {
-                        println!("File {:?} missing on cloud (was there before), deleting locally", path);
-                        let path_str = path.to_string_lossy().to_string();
-                        let pair_id = pair.id;
-                        if let Err(e) = tokio::fs::remove_file(path).await {
-                            eprintln!("Failed to delete local file {:?}: {:?}", path, e);
+                    if path.is_dir() {
+                        if was_there_before {
+                            println!("Directory {:?} missing on cloud (was there before), deleting locally", path);
+                            let _ = tokio::fs::remove_dir_all(&path).await;
                         } else {
-                            on_status(SyncStatus::Deleted { pair_id, path: path_str });
+                            let new_folder_id = provider.create_folder(&name, &remote_dir_id).await?;
+                            self.sync_directory_recursive(&path, &new_folder_id, pair, provider, &on_status_c, cancel_c).await?;
                         }
                     } else {
-                        let _ = self.sync_file(path, pair, on_status.clone()).await;
+                        if was_there_before {
+                            println!("File {:?} missing on cloud (was there before), deleting locally", path);
+                            let path_str = path.to_string_lossy().to_string();
+                            let pair_id = pair.id;
+                            if let Err(e) = tokio::fs::remove_file(&path).await {
+                                eprintln!("Failed to delete local file {:?}: {:?}", path, e);
+                            } else {
+                                on_status_c(SyncStatus::Deleted { pair_id, path: path_str });
+                            }
+                        } else {
+                            let _ = self.sync_file(&path, pair, on_status_c, Some(cancel_c)).await;
+                        }
                     }
-                }
+                    Ok(())
+                }));
             }
         }
 
@@ -419,28 +487,46 @@ impl SyncEngine {
             if remote.name.starts_with('.') || remote.name == "node_modules" || remote.name == "target" || remote.name == "dist" { continue; }
             if !local_entries.contains_key(&remote.name) {
                 let dest = local_dir.join(&remote.name);
-                
-                let mut was_deleted_locally = false;
-                if let (Some(last_sync), Some(r_mtime)) = (pair.last_sync_at, remote.modified_at) {
-                    if r_mtime <= last_sync {
-                        was_deleted_locally = true;
+                let remote_name = remote.name.clone();
+                let remote_id = remote.id.clone();
+                let remote_is_dir = remote.is_dir;
+                let remote_modified_at = remote.modified_at;
+                let remote_dir_id = remote_dir_id.to_string();
+                let on_status_c = on_status.clone();
+                let cancel_c = cancel.clone();
+                tasks.push(Box::pin(async move {
+                    if cancel_c.load(std::sync::atomic::Ordering::Relaxed) { return Ok(()); }
+                    let mut was_deleted_locally = false;
+                    if let (Some(last_sync), Some(r_mtime)) = (pair.last_sync_at, remote_modified_at) {
+                        if r_mtime <= last_sync {
+                            was_deleted_locally = true;
+                        }
                     }
-                }
 
-                if was_deleted_locally {
-                    println!("Sync: File {:?} missing locally (was there before), deleting on cloud", remote.name);
-                    if let Err(e) = provider.delete_file(&remote.name, remote_dir_id).await {
-                        eprintln!("Failed to sync local deletion to cloud for {}: {:?}", remote.name, e);
-                    }
-                } else {
-                    if remote.is_dir {
-                        tokio::fs::create_dir_all(&dest).await?;
-                        self.sync_directory_recursive(&dest, &remote.id, pair, provider, on_status).await?;
+                    if was_deleted_locally {
+                        println!("Sync: File {:?} missing locally (was there before), deleting on cloud", remote_name);
+                        if let Err(e) = provider.delete_file(&remote_name, &remote_dir_id).await {
+                            eprintln!("Failed to sync local deletion to cloud for {}: {:?}", remote_name, e);
+                        }
                     } else {
-                        println!("Sync: File {:?} is new on cloud. Downloading.", remote.name);
-                        let _ = self.sync_remote_to_local(&remote.id, &dest, pair, on_status.clone()).await;
+                        if remote_is_dir {
+                            tokio::fs::create_dir_all(&dest).await?;
+                            self.sync_directory_recursive(&dest, &remote_id, pair, provider, &on_status_c, cancel_c).await?;
+                        } else {
+                            println!("Sync: File {:?} is new on cloud. Downloading.", remote_name);
+                            let _ = self.sync_remote_to_local(&remote_id, &dest, pair, on_status_c, Some(cancel_c)).await;
+                        }
                     }
-                }
+                    Ok(())
+                }));
+            }
+        }
+
+        // Run concurrently (up to 3 parallel file transfers / directory syncs)
+        let mut stream = futures::stream::iter(tasks).buffer_unordered(3);
+        while let Some(res) = stream.next().await {
+            if let Err(e) = res {
+                eprintln!("Directory sync error: {:?}", e);
             }
         }
 
@@ -466,10 +552,13 @@ impl SyncEngine {
         Ok(current_id)
     }
 
-    pub async fn sync_remote_to_local<F>(&self, file_id: &str, dest: &Path, pair: &SyncPair, on_status: Arc<F>) -> Result<()>
+    pub async fn sync_remote_to_local<F>(&self, file_id: &str, dest: &Path, pair: &SyncPair, on_status: Arc<F>, cancel: Option<Arc<std::sync::atomic::AtomicBool>>) -> Result<()>
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
+        if let Some(c) = &cancel {
+            if c.load(std::sync::atomic::Ordering::Relaxed) { return Ok(()); }
+        }
         let creds = self.get_valid_credentials(&pair.account_id).await?.ok_or_else(|| anyhow::anyhow!("Not connected"))?;
         let provider = match make_provider(&pair.account_id, creds.access_token) {
             Some(p) => p,
@@ -538,7 +627,19 @@ impl SyncEngine {
 
         if let Some(pair) = pair {
             let mut watcher = self.watcher.lock().await;
-            let _ = watcher.unwatch(Path::new(&pair.local_path));
+            // Check if any other pair still uses this path before unwatching
+            let pairs = self.get_sync_pairs().await.unwrap_or_default();
+            let other_exists = pairs.iter().any(|p| p.id != id && p.local_path == pair.local_path);
+            if !other_exists {
+                let _ = watcher.unwatch(Path::new(&pair.local_path));
+            }
+        }
+
+        {
+            let mut tokens = self.cancel_tokens.lock().await;
+            if let Some(token) = tokens.remove(&id) {
+                token.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         }
 
         sqlx::query("DELETE FROM sync_pairs WHERE id = ?")
@@ -845,10 +946,13 @@ impl SyncEngine {
         Ok(account_id)
     }
 
-    pub async fn delete_remote_file<F>(&self, path: &Path, pair: &SyncPair, on_status: Arc<F>) -> Result<()>
+    pub async fn delete_remote_file<F>(&self, path: &Path, pair: &SyncPair, on_status: Arc<F>, cancel: Option<Arc<std::sync::atomic::AtomicBool>>) -> Result<()>
     where
         F: Fn(SyncStatus) + Send + Sync + 'static,
     {
+        if let Some(c) = &cancel {
+            if c.load(std::sync::atomic::Ordering::Relaxed) { return Ok(()); }
+        }
         let creds = self.get_valid_credentials(&pair.account_id).await.unwrap_or(None);
         if let Some(creds) = creds {
             let provider = match make_provider(&pair.account_id, creds.access_token) {

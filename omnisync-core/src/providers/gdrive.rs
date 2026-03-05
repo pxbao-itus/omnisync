@@ -269,47 +269,62 @@ impl CloudProvider for GoogleDriveProvider {
 
     async fn list_files(&self, folder_id: &str) -> CloudResult<Vec<crate::provider::RemoteFile>> {
         let q = format!("'{}' in parents and trashed = false", folder_id);
-        let response = self.client
-            .get("https://www.googleapis.com/drive/v3/files")
-            .query(&[("q", q.as_str()), ("fields", "files(id, name, mimeType, size, modifiedTime, md5Checksum)")])
-            .bearer_auth(&self.access_token)
-            .send()
-            .await?;
+        let mut all_files = Vec::new();
+        let mut page_token: Option<String> = None;
 
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(CloudError::Unauthenticated);
+        loop {
+            let mut request = self.client
+                .get("https://www.googleapis.com/drive/v3/files")
+                .query(&[("q", q.as_str()), ("fields", "nextPageToken, files(id, name, mimeType, size, modifiedTime, md5Checksum)"), ("pageSize", "1000")])
+                .bearer_auth(&self.access_token);
+
+            if let Some(token) = &page_token {
+                request = request.query(&[("pageToken", token.as_str())]);
+            }
+
+            let response = request.send().await?;
+
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(CloudError::Unauthenticated);
+            }
+
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(CloudError::ApiError(format!("List files failed: {}", error_text)));
+            }
+
+            let body: serde_json::Value = response.json().await?;
+            let files_json = body["files"].as_array().ok_or_else(|| CloudError::ApiError("Invalid body".to_string()))?;
+            
+            for f in files_json {
+                let id = f["id"].as_str().unwrap_or_default().to_string();
+                let name = f["name"].as_str().unwrap_or_default().to_string();
+                let mime_type = f["mimeType"].as_str().unwrap_or_default();
+                let is_dir = mime_type == "application/vnd.google-apps.folder";
+                let size = f["size"].as_str().and_then(|s| s.parse().ok());
+                let hash = f["md5Checksum"].as_str().map(|s| s.to_string());
+                let modified_at = f["modifiedTime"].as_str().and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
+                });
+
+                all_files.push(crate::provider::RemoteFile { 
+                    id, 
+                    name, 
+                    is_dir,
+                    size,
+                    modified_at,
+                    hash,
+                });
+            }
+
+            if let Some(next_token) = body["nextPageToken"].as_str() {
+                page_token = Some(next_token.to_string());
+            } else {
+                break;
+            }
         }
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(CloudError::ApiError(format!("List files failed: {}", error_text)));
-        }
-
-        let body: serde_json::Value = response.json().await?;
-        let files_json = body["files"].as_array().ok_or_else(|| CloudError::ApiError("Invalid body".to_string()))?;
-        
-        let files = files_json.iter().filter_map(|f| {
-            let id = f["id"].as_str()?.to_string();
-            let name = f["name"].as_str()?.to_string();
-            let mime_type = f["mimeType"].as_str()?;
-            let is_dir = mime_type == "application/vnd.google-apps.folder";
-            let size = f["size"].as_str().and_then(|s| s.parse().ok());
-            let hash = f["md5Checksum"].as_str().map(|s| s.to_string());
-            let modified_at = f["modifiedTime"].as_str().and_then(|s| {
-                chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
-            });
-
-            Some(crate::provider::RemoteFile { 
-                id, 
-                name, 
-                is_dir,
-                size,
-                modified_at,
-                hash,
-            })
-        }).collect();
-
-        Ok(files)
+        Ok(all_files)
     }
 
     async fn get_metadata(&self, _cloud_path: &str) -> CloudResult<FileMetadata> {

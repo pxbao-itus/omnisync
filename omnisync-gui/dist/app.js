@@ -231,7 +231,7 @@ function renderCard(pair) {
     const accountEmail = account ? account.email : pair.account_id;
 
     return `
-        <div class="folder-card" data-id="${pair.id}" onclick="openFolderDetail(${pair.id})">
+        <div class="folder-card" data-id="${pair.id}" onclick="if(!event.target.closest('button')) openFolderDetail(${pair.id})">
             <div class="folder-icon ${pair.provider_id}">
                 ${providerIcon(pair.provider_id)}
             </div>
@@ -257,13 +257,13 @@ function renderCard(pair) {
                     ${statusLabel}
                 </div>
                 <div class="card-actions" style="display: flex; gap: 8px;">
-                    <button class="btn-sync-now" onclick="event.stopPropagation(); syncPairNow(${pair.id})" title="${window.t('sync_now')}"
+                    <button class="btn-sync-now" onclick="event.stopPropagation(); syncPairNow(event, ${pair.id})" title="${window.t('sync_now')}"
                         style="width: 32px; height: 32px; background: rgba(0, 210, 255, 0.1); color: var(--accent); border: 1px solid rgba(0, 210, 255, 0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s;">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
                         </svg>
                     </button>
-                    <button class="btn-remove" onclick="event.stopPropagation(); removePair(${pair.id})" title="Remove"
+                    <button class="btn-remove" onclick="event.stopPropagation(); removePair(event, ${pair.id})" title="Remove"
                         style="width: 32px; height: 32px; background: rgba(255, 82, 82, 0.1); color: #ff5252; border: 1px solid rgba(255, 82, 82, 0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s;">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                             <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -275,7 +275,8 @@ function renderCard(pair) {
     `;
 }
 
-async function syncPairNow(id) {
+async function syncPairNow(e, id) {
+    if (e) e.stopPropagation();
     try {
         await invoke('sync_pair_now', { id });
         showToast(window.t('syncing') || 'Syncing...', 'info');
@@ -522,8 +523,18 @@ async function addPair(local, remote, remoteName, provider, accountId) {
     }
 }
 
-async function removePair(id) {
-    if (!confirm(window.t('confirm_remove_pair'))) return;
+async function removePair(e, id) {
+    if (e) {
+        e.stopPropagation();
+        e.preventDefault();
+    }
+
+    const confirmed = await ask(window.t('confirm_remove_pair'), {
+        title: 'OmniSync',
+        kind: 'warning'
+    });
+
+    if (!confirmed) return;
 
     try {
         await invoke('remove_sync_pair', { id });
